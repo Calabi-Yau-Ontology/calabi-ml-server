@@ -6,6 +6,12 @@ from .dtos import (
     SuggestRequest,
     SuggestResponse,
 )
+from .schemas import (
+    NERRequest,
+    NERResponse,
+    SuggestRequest,
+    SuggestResponse,
+)
 from .service import ner_service, suggestion_service
 
 router = APIRouter(
@@ -29,9 +35,6 @@ async def suggest_terms(payload: SuggestRequest) -> SuggestResponse:
     - NER 결과 + 텍스트 기반 추천 생성
     """
     entities = ner_service.extract_entities(payload.text)
-    suggestions = suggestion_service.generate(
-        user_id=payload.user_id,
-        text=payload.text,
-        entities=entities,
-    )
+    suggestions = suggestion_service.generate(payload, entities)
     return SuggestResponse(suggestions=suggestions, entities=entities)
+

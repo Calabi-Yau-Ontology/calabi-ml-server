@@ -1,11 +1,21 @@
 from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
+# ---------- NER ----------
+
+class NERRequest(BaseModel):
+    text: str = Field(..., description="분석할 원문 텍스트")
+    
 class Entity(BaseModel):
     text: str
     label: str = Field(..., description="엔티티 타입")
     start: int = Field(..., description="원문 상 시작 인덱스")
     end: int = Field(..., description="원문 상 끝 인덱스 (exclusive)")
+
+class NERResponse(BaseModel):
+    entities: list[Entity]
+
+# ---------- Suggest ----------
 
 class SuggestContext(BaseModel):
     field: Optional[str] = Field(
@@ -21,8 +31,16 @@ class SuggestContext(BaseModel):
         description="추가 컨텍스트",
     )
 
+class SuggestRequest(BaseModel):
+    user_id: str
+    text: str
+    context: Optional[SuggestContext] = None
+
 class SuggestItem(BaseModel):
     type: Literal["completion", "tag", "entity"]
     text: str
     score: float
 
+class SuggestResponse(BaseModel):
+    suggestions: list[SuggestItem]
+    entities: list[Entity]
