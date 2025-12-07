@@ -1,12 +1,12 @@
 from fastapi import APIRouter
 
-from dtos import (
+from .dtos import (
     NERRequest,
     NERResponse,
     SuggestRequest,
     SuggestResponse,
 )
-from service import ner_service, suggestion_service
+from .service import ner_service, suggestion_service
 
 router = APIRouter(
     prefix="/nlp",

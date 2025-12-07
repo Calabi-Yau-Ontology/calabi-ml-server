@@ -1,8 +1,8 @@
 from typing import Optional
 from pydantic import BaseModel, Field
 
-from schemas import Entity
-from schemas import SuggestContext, SuggestItem
+from .schemas import Entity
+from .schemas import SuggestContext, SuggestItem
 
 class NERRequest(BaseModel):
     text: str = Field(..., description="분석할 원문 텍스트")

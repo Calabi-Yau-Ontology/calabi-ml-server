@@ -1,10 +1,10 @@
 from dataclasses import dataclass
 from typing import List
 
-import constants
-from exceptions import NERError, SuggestionError
-from schemas import Entity, SuggestItem
-from utils import simple_tokenize
+from . import constants
+from .exceptions import NERError, SuggestionError
+from .schemas import Entity, SuggestItem
+from .utils import simple_tokenize
 
 
 @dataclass
