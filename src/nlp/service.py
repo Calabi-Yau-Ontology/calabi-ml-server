@@ -200,40 +200,61 @@ class SuggestionService:
         text: str,
         cursor_ctx: CursorContext,
         entities: Sequence[Entity],
+        history_tokens: Sequence[tuple[str, int]],
+        popular_tags: Sequence[str],
     ) -> list[SuggestItem]:
         if not cursor_ctx.has_fragment:
             return []
 
-        fragment_norm = cursor_ctx.fragment.lower()
+        fragment_norm = cursor_ctx.fragment.strip().lower()
+        if not fragment_norm:
+            return []
+
         before = text[:cursor_ctx.token_start]
         after = text[cursor_ctx.token_end:]
         seen: set[str] = set()
         items: list[SuggestItem] = []
 
-        for ent in entities:
-            candidate = ent.text.strip()
+        def append_candidate(candidate: str, score: float) -> None:
+            candidate = candidate.strip()
             if not candidate:
-                continue
-
+                return
             candidate_norm = candidate.lower()
             if candidate_norm in seen:
-                continue
+                return
             if not candidate_norm.startswith(fragment_norm):
-                continue
+                return
             if (
                 candidate_norm == fragment_norm
                 and cursor_ctx.token_text.strip().lower() == candidate_norm
             ):
-                continue
-
+                return
             seen.add(candidate_norm)
             completed = f"{before}{candidate}{after}"
             items.append(
                 SuggestItem(
                     type="completion",
                     text=completed,
-                    score=constants.SCORE_COMPLETION_ENTITY_ACTIVE,
+                    score=score,
                 )
+            )
+
+        for ent in entities:
+            append_candidate(
+                ent.text,
+                constants.SCORE_COMPLETION_ENTITY_ACTIVE,
+            )
+
+        for token, _freq in history_tokens:
+            append_candidate(
+                token,
+                constants.SCORE_COMPLETION_HISTORY_ACTIVE,
+            )
+
+        for tag in popular_tags:
+            append_candidate(
+                tag,
+                constants.SCORE_COMPLETION_POPULAR_ACTIVE,
             )
 
         return items
@@ -316,6 +337,38 @@ class SuggestionService:
 
         return items
 
+    def _history_token_candidates(
+        self,
+        history: Sequence[str],
+    ) -> list[tuple[str, int]]:
+        tokens: dict[str, list[Any]] = {}
+        for phrase in history:
+            for token in simple_tokenize(phrase):
+                token_clean = token.strip()
+                if len(token_clean) < 2:
+                    continue
+                key = token_clean.lower()
+                if key not in tokens:
+                    tokens[key] = [token_clean, 1]
+                else:
+                    tokens[key][1] += 1
+        sorted_tokens = sorted(
+            ((value[0], value[1]) for value in tokens.values()),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )
+        return sorted_tokens
+
+    def _popular_tag_candidates(
+        self,
+        popular_tags: Sequence[str],
+    ) -> list[str]:
+        return [
+            tag.strip()
+            for tag in popular_tags
+            if isinstance(tag, str) and len(tag.strip()) >= 2
+        ]
+
     def _deduplicate_and_rank(
         self,
         suggestions: Sequence[SuggestItem],
@@ -362,6 +415,9 @@ class SuggestionService:
                 ctx.cursor_position if ctx else None,
             )
 
+            history_tokens = self._history_token_candidates(history)
+            popular_tag_candidates = self._popular_tag_candidates(popular_tags)
+
             suggestions: list[SuggestItem] = []
 
             # 0) 현재 단어에 대해 NER 기반 자동완성
@@ -370,6 +426,8 @@ class SuggestionService:
                     text,
                     cursor_ctx,
                     entities,
+                    history_tokens,
+                    popular_tag_candidates,
                 )
             )
 
@@ -379,19 +437,22 @@ class SuggestionService:
                     text,
                     cursor_ctx,
                     entities,
-                    popular_tags,
+                    popular_tag_candidates,
                     history,
                 )
             )
 
             # 1) 과거 history(이벤트 제목들) 기반 completion
-            suggestions.extend(self._history_completions(text, history))
+            prefix_text = text[: cursor_ctx.cursor]
+            suggestions.extend(self._history_completions(prefix_text, history))
 
             # 2) generic suffix 기반 completion
-            suggestions.extend(self._generic_completions(text))
+            suggestions.extend(self._generic_completions(prefix_text))
 
             # 3) 엔티티 + 인기 태그 기반 tag 추천
-            suggestions.extend(self._tag_suggestions(entities, popular_tags))
+            suggestions.extend(
+                self._tag_suggestions(entities, popular_tag_candidates)
+            )
 
             # 중복 제거 + score 순 정렬
             return self._deduplicate_and_rank(suggestions, text)
