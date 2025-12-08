@@ -9,6 +9,27 @@ from .schemas import Entity, SuggestItem, SuggestRequest
 from .utils import simple_tokenize
 
 
+def _normalize_text(text: str) -> str:
+    return " ".join(text.split()).strip().lower()
+
+
+@dataclass(frozen=True)
+class CursorContext:
+    cursor: int
+    token_start: int
+    token_end: int
+    fragment: str
+    token_text: str
+
+    @property
+    def has_fragment(self) -> bool:
+        return bool(self.fragment)
+
+    @property
+    def at_token_boundary(self) -> bool:
+        return not self.fragment
+
+
 @dataclass
 class NERService:
     """
@@ -150,6 +171,175 @@ class SuggestionService:
 
         return items
 
+    def _cursor_context(self, text: str, cursor: int | None) -> CursorContext:
+        if cursor is None:
+            cursor = len(text)
+        length = len(text)
+        cursor = max(0, min(length, cursor))
+
+        start = cursor
+        while start > 0 and not text[start - 1].isspace():
+            start -= 1
+
+        end = cursor
+        while end < length and not text[end].isspace():
+            end += 1
+
+        fragment = text[start:cursor]
+        token_text = text[start:end]
+        return CursorContext(
+            cursor=cursor,
+            token_start=start,
+            token_end=end,
+            fragment=fragment,
+            token_text=token_text,
+        )
+
+    def _entity_completions_for_active_token(
+        self,
+        text: str,
+        cursor_ctx: CursorContext,
+        entities: Sequence[Entity],
+    ) -> list[SuggestItem]:
+        if not cursor_ctx.has_fragment:
+            return []
+
+        fragment_norm = cursor_ctx.fragment.lower()
+        before = text[:cursor_ctx.token_start]
+        after = text[cursor_ctx.token_end:]
+        seen: set[str] = set()
+        items: list[SuggestItem] = []
+
+        for ent in entities:
+            candidate = ent.text.strip()
+            if not candidate:
+                continue
+
+            candidate_norm = candidate.lower()
+            if candidate_norm in seen:
+                continue
+            if not candidate_norm.startswith(fragment_norm):
+                continue
+            if (
+                candidate_norm == fragment_norm
+                and cursor_ctx.token_text.strip().lower() == candidate_norm
+            ):
+                continue
+
+            seen.add(candidate_norm)
+            completed = f"{before}{candidate}{after}"
+            items.append(
+                SuggestItem(
+                    type="completion",
+                    text=completed,
+                    score=constants.SCORE_COMPLETION_ENTITY_ACTIVE,
+                )
+            )
+
+        return items
+
+    def _next_word_recommendations(
+        self,
+        text: str,
+        cursor_ctx: CursorContext,
+        entities: Sequence[Entity],
+        popular_tags: Sequence[str],
+        history: Sequence[str],
+    ) -> list[SuggestItem]:
+        if not cursor_ctx.at_token_boundary:
+            return []
+
+        before = text[:cursor_ctx.cursor]
+        after = text[cursor_ctx.cursor:]
+
+        def build_base() -> str:
+            if not before:
+                return ""
+            if before[-1].isspace():
+                return before
+            return f"{before} "
+
+        def append_candidate(
+            items_list: list[SuggestItem],
+            candidate: str,
+            score: float,
+            seen_texts: set[str],
+        ) -> None:
+            candidate = candidate.strip()
+            if not candidate:
+                return
+            base = build_base()
+            suggestion_text = f"{base}{candidate}"
+            if after and not after[0].isspace():
+                suggestion_text = f"{suggestion_text} {after}"
+            else:
+                suggestion_text = f"{suggestion_text}{after}"
+
+            if suggestion_text in seen_texts:
+                return
+            seen_texts.add(suggestion_text)
+            items_list.append(
+                SuggestItem(
+                    type="completion",
+                    text=suggestion_text,
+                    score=score,
+                )
+            )
+
+        items: list[SuggestItem] = []
+        seen: set[str] = set()
+
+        for ent in entities:
+            append_candidate(
+                items,
+                ent.text,
+                constants.SCORE_COMPLETION_NEXT_ENTITY,
+                seen,
+            )
+
+        for tag in popular_tags:
+            append_candidate(
+                items,
+                tag,
+                constants.SCORE_COMPLETION_NEXT_TAG,
+                seen,
+            )
+
+        for phrase in history:
+            for token in simple_tokenize(phrase):
+                append_candidate(
+                    items,
+                    token,
+                    constants.SCORE_COMPLETION_NEXT_HISTORY,
+                    seen,
+                )
+
+        return items
+
+    def _deduplicate_and_rank(
+        self,
+        suggestions: Sequence[SuggestItem],
+        current_text: str,
+    ) -> list[SuggestItem]:
+        current_norm = _normalize_text(current_text)
+        best_by_text: dict[str, SuggestItem] = {}
+
+        for suggestion in suggestions:
+            normalized = _normalize_text(suggestion.text)
+            if not normalized or normalized == current_norm:
+                continue
+
+            existing = best_by_text.get(normalized)
+            if existing is None or existing.score < suggestion.score:
+                best_by_text[normalized] = suggestion
+
+        ranked = sorted(
+            best_by_text.values(),
+            key=lambda item: item.score,
+            reverse=True,
+        )
+        return ranked[: constants.MAX_SUGGESTIONS]
+
     def generate(
         self,
         request: SuggestRequest,
@@ -167,7 +357,32 @@ class SuggestionService:
                 history = extra.get("history", []) or []
                 popular_tags = extra.get("popular_tags", []) or []
 
+            cursor_ctx = self._cursor_context(
+                text,
+                ctx.cursor_position if ctx else None,
+            )
+
             suggestions: list[SuggestItem] = []
+
+            # 0) 현재 단어에 대해 NER 기반 자동완성
+            suggestions.extend(
+                self._entity_completions_for_active_token(
+                    text,
+                    cursor_ctx,
+                    entities,
+                )
+            )
+
+            # 0-1) 다음 단어 추천
+            suggestions.extend(
+                self._next_word_recommendations(
+                    text,
+                    cursor_ctx,
+                    entities,
+                    popular_tags,
+                    history,
+                )
+            )
 
             # 1) 과거 history(이벤트 제목들) 기반 completion
             suggestions.extend(self._history_completions(text, history))
@@ -179,15 +394,7 @@ class SuggestionService:
             suggestions.extend(self._tag_suggestions(entities, popular_tags))
 
             # 중복 제거 + score 순 정렬
-            dedup: dict[tuple[str, str], SuggestItem] = {}
-            for s in suggestions:
-                key = (s.type, s.text)
-                # 더 높은 점수만 유지
-                if key not in dedup or dedup[key].score < s.score:
-                    dedup[key] = s
-
-            result = sorted(dedup.values(), key=lambda x: x.score, reverse=True)
-            return result
+            return self._deduplicate_and_rank(suggestions, text)
 
         except Exception as exc:  # noqa: BLE001
             raise SuggestionError(str(exc)) from exc
