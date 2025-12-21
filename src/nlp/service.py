@@ -1,17 +1,20 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Any, List, Sequence
+from typing import Any, Dict, List, Sequence
+from langdetect import detect
+
+from src.config import settings
+from .models.ner_engine import NEREngine
+from .openai.normalizer import canonicalize_with_normalized_sentence
+from .utils import clamp01, similarity
 
 from . import constants
 from .exceptions import NERError, SuggestionError
-from .schemas import Entity, SuggestItem, SuggestRequest
+from .schemas import Entity, SuggestItem
+from .dtos import SuggestRequest
 from .utils import simple_tokenize
-
 
 def _normalize_text(text: str) -> str:
     return " ".join(text.split()).strip().lower()
-
 
 @dataclass(frozen=True)
 class CursorContext:
@@ -29,45 +32,141 @@ class CursorContext:
     def at_token_boundary(self) -> bool:
         return not self.fragment
 
+def detect_lang(text: str, lang_hint: str | None) -> str:
+    if lang_hint in ("ko", "en"):
+        return lang_hint
+    try:
+        lang = detect(text)
+        if lang.startswith("ko"):
+            return "ko"
+        if lang.startswith("en"):
+            return "en"
+        return "unknown"
+    except Exception:
+        return "unknown"
+    
+def _best_relabel(canonical_en: str, en_entities: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    """
+    Find best matching English NER entity for canonical_en via string similarity.
+    Returns: {"label":..., "confidence":...} or None
+    """
+    best = None
+    best_score = 0.0
+    for e in en_entities:
+        txt = str(e.get("text", ""))
+        score = similarity(canonical_en, txt)
+        if score > best_score:
+            best_score = score
+            best = e
 
-@dataclass
+    # threshold: similarity gate + entity confidence gate
+    if not best:
+        return None
+    if best_score < 0.75:
+        return None
+
+    return best
+
 class NERService:
-    """
-    현재는 rule-based 더미 구현.
-    나중에 HF 모델 로딩해서 여기에 붙이면 됨.
-    """
+    def __init__(self) -> None:
+        self.engine = NEREngine(min_token_len=settings.NER_MIN_TOKEN_LEN)
 
-    def extract_entities(self, text: str) -> List[Entity]:
-        if not text:
-            return []
+    async def run(self, text: str, lang_hint: str | None) -> Dict[str, Any]:
+        errors: List[Dict[str, Any]] = []
+        lang = detect_lang(text, lang_hint)
 
-        entities: list[Entity] = []
-        cursor = 0
-
+        # ---- Pass 1: span candidates on original text (label is just a hint) ----
         try:
-            tokens = simple_tokenize(text)
-            for token in tokens:
-                start = text.find(token, cursor)
-                if start == -1:
-                    continue
-                end = start + len(token)
+            raw_entities = self.engine.extract(text)
+        except Exception as e:
+            raw_entities = []
+            errors.append({"stage": "ner_pass1", "message": str(e)})
 
-                if len(token) >= 2:
-                    entities.append(
-                        Entity(
-                            text=token,
-                            label=constants.DEFAULT_ENTITY_LABEL,
-                            start=start,
-                            end=end,
-                        )
-                    )
+        raw_entities = raw_entities[: settings.NER_MAX_MENTIONS]
 
-                cursor = end
-        except Exception as exc:  # noqa: BLE001
-            raise NERError(str(exc)) from exc
+        base_mentions: List[Dict[str, Any]] = []
+        for e in raw_entities:
+            surface = (e.text or "").strip()
+            if not surface:
+                continue
+            base_mentions.append(
+                {
+                    "surface": surface,
+                    "span": {"start": int(e.start), "end": int(e.end)},
+                    "ner": {"label": e.label, "confidence": clamp01(float(e.score))},
+                }
+            )
+        print("Base mentions from Pass 1:", base_mentions)
+        # ---- Pass 2: GPT produces (normalized_text_en + canonical_en per mention) ----
+        try:
+            canon_out = await canonicalize_with_normalized_sentence(
+                text=text,
+                lang=lang,
+                mentions=[{"surface": m["surface"], "span": m["span"]} for m in base_mentions],
+            )
+            print("Canonicalization output:", canon_out)
+        except Exception as e:
+            canon_out = {"normalized_text_en": "", "mentions": []}
+            errors.append({"stage": "canonicalize", "message": str(e)})
 
-        return entities
+        normalized_text_en = str(canon_out.get("normalized_text_en", "")).strip() or None
 
+        canon_index: Dict[tuple[int, int, str], Dict[str, Any]] = {}
+        for cm in canon_out.get("mentions", []):
+            try:
+                k = (int(cm["span"]["start"]), int(cm["span"]["end"]), str(cm["surface"]))
+                canon_index[k] = cm
+            except Exception:
+                continue
+
+        # ---- Pass 3: English re-labeling using GLiNER on normalized_text_en ----
+        en_entities: List[Dict[str, Any]] = []
+        if normalized_text_en:
+            try:
+                en_raw = self.engine.extract(normalized_text_en)
+                for e in en_raw:
+                    en_entities.append({"text": e.text, "label": e.label, "confidence": clamp01(float(e.score))})
+            except Exception as e:
+                errors.append({"stage": "ner_pass3_en", "message": str(e)})
+
+        mentions: List[Dict[str, Any]] = []
+        for m in base_mentions:
+            k = (int(m["span"]["start"]), int(m["span"]["end"]), str(m["surface"]))
+            cm = canon_index.get(k)
+
+            canon_en = (cm.get("canonical_en") if cm else m["surface"]) or m["surface"]
+            reason = (cm.get("reason") if cm else "unchanged") if cm else "unchanged"
+
+            # default label from pass1
+            final_label = m["ner"]["label"]
+            print("Final label before relabeling:", final_label)
+            final_conf = float(m["ner"]["confidence"])
+
+            # try relabel using english NER if we have it
+            if en_entities and canon_en:
+                best = _best_relabel(str(canon_en), en_entities)
+                if best:
+                    # override only if relabel confidence is strong
+                    if float(best.get("confidence", 0.0)) >= 0.55:
+                        final_label = str(best["label"])
+                        final_conf = max(final_conf, float(best.get("confidence", 0.0)))
+
+            mentions.append(
+                {
+                    "surface": m["surface"],
+                    "span": m["span"],
+                    "ner": {"label": final_label, "confidence": clamp01(final_conf)},
+                    "canonical": {"en": str(canon_en), "reason": str(reason)},
+                }
+            )
+
+        return {
+            "text": text,
+            "lang": lang,
+            "normalized_text_en": normalized_text_en,
+            "mentions": mentions,
+            "errors": errors,
+        }
 
 @dataclass
 class SuggestionService:
