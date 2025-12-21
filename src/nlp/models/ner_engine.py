@@ -38,11 +38,9 @@ class NEREngine:
 
     def extract(self, text: str) -> List[RawEntity]:
         if self._gliner is not None:
-            print("Using GLiNER for NER extraction", text)
             ents = self._extract_gliner(text)
             if ents:
                 return ents
-        print("Falling back to simple NER extraction", text, ents)
         return self._extract_fallback(text)
 
     def _extract_gliner(self, text: str) -> List[RawEntity]:

@@ -96,7 +96,6 @@ class NERService:
                     "ner": {"label": e.label, "confidence": clamp01(float(e.score))},
                 }
             )
-        print("Base mentions from Pass 1:", base_mentions)
         # ---- Pass 2: GPT produces (normalized_text_en + canonical_en per mention) ----
         try:
             canon_out = await canonicalize_with_normalized_sentence(
@@ -104,7 +103,6 @@ class NERService:
                 lang=lang,
                 mentions=[{"surface": m["surface"], "span": m["span"]} for m in base_mentions],
             )
-            print("Canonicalization output:", canon_out)
         except Exception as e:
             canon_out = {"normalized_text_en": "", "mentions": []}
             errors.append({"stage": "canonicalize", "message": str(e)})
@@ -139,7 +137,6 @@ class NERService:
 
             # default label from pass1
             final_label = m["ner"]["label"]
-            print("Final label before relabeling:", final_label)
             final_conf = float(m["ner"]["confidence"])
 
             # try relabel using english NER if we have it
