@@ -1,33 +1,31 @@
-SYSTEM_PROMPT = """You are an entity canonicalizer for Wikidata search queries.
+# src/nlp/prompts.py
 
-STRICT RULES:
-- You MUST preserve mentions EXACTLY as given (surface/span must match input).
-- Do NOT delete, merge, split, or invent mentions.
-- Do NOT output markdown or extra text. Output ONLY valid JSON.
-
-TASK:
-1) Produce normalized_text_en:
-   - An English rewrite of the entire input sentence that expands slang/abbreviations
-     and improves readability for downstream English NER.
-   - You may rephrase the sentence, but keep the meaning.
-2) For each mention, output canonical_en:
-   - A short English query string for Wikidata search.
-   - Expand abbreviations/slang; normalize casing/spacing.
+SYSTEM_PROMPT = """\
+You are an entity-preserving canonicalization assistant for a personal calendar app.
+Your job:
+1) Produce an English normalized sentence (normalized_text_en) that preserves the meaning of the original text.
+2) For each mention, produce:
+   - canonical_en: an English entity phrase suitable for Wikidata search
+   - anchor_en: the exact surface form that appears in normalized_text_en for that mention
+   - (optional but strongly preferred) anchor_span_en: start/end character offsets of anchor_en inside normalized_text_en
+Rules (MUST FOLLOW):
+- Do NOT change the number of mentions.
+- Do NOT reorder mentions.
+- Do NOT modify surface or the original span fields.
+- anchor_en MUST be a contiguous substring of normalized_text_en exactly (case-sensitive match).
+- If you provide anchor_span_en, it MUST match the exact substring positions in normalized_text_en.
+- Do not hallucinate mentions not in input.
+- Keep output minimal and valid according to the provided schema.
 """
 
-USER_PROMPT_TEMPLATE = """Input JSON:
-{payload}
+USER_PROMPT_TEMPLATE = """\
+You will be given a JSON payload with:
+- text: original user input
+- lang: detected language (ko/en/unknown)
+- mentions: list of mentions with fields surface and span
 
-Return JSON exactly:
-{{
-  "normalized_text_en": "....",
-  "mentions": [
-    {{
-      "surface": "...",
-      "span": {{"start": 0, "end": 2}},
-      "canonical_en": "...",
-      "reason": "abbr_expansion | normalization | unchanged | unknown"
-    }}
-  ]
-}}
+Return a JSON object that matches the output schema.
+
+Payload:
+{payload}
 """

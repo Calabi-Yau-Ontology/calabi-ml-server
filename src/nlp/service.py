@@ -1,11 +1,12 @@
 from dataclasses import dataclass
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Optional, Tuple
+
 from langdetect import detect
 
 from src.config import settings
 from .models.ner_engine import NEREngine
-from .openai.normalizer import canonicalize_with_normalized_sentence
-from .utils import clamp01, similarity
+from .openai.normalizer import canonicalize_with_anchors  # ✅ 변경
+from .utils import clamp01
 
 from . import constants
 from .exceptions import NERError, SuggestionError
@@ -13,8 +14,10 @@ from .schemas import Entity, SuggestItem
 from .dtos import SuggestRequest
 from .utils import simple_tokenize
 
+
 def _normalize_text(text: str) -> str:
     return " ".join(text.split()).strip().lower()
+
 
 @dataclass(frozen=True)
 class CursorContext:
@@ -32,6 +35,7 @@ class CursorContext:
     def at_token_boundary(self) -> bool:
         return not self.fragment
 
+
 def detect_lang(text: str, lang_hint: str | None) -> str:
     if lang_hint in ("ko", "en"):
         return lang_hint
@@ -44,28 +48,82 @@ def detect_lang(text: str, lang_hint: str | None) -> str:
         return "unknown"
     except Exception:
         return "unknown"
-    
-def _best_relabel(canonical_en: str, en_entities: List[Dict[str, Any]]) -> Dict[str, Any] | None:
-    """
-    Find best matching English NER entity for canonical_en via string similarity.
-    Returns: {"label":..., "confidence":...} or None
-    """
-    best = None
-    best_score = 0.0
-    for e in en_entities:
-        txt = str(e.get("text", ""))
-        score = similarity(canonical_en, txt)
-        if score > best_score:
-            best_score = score
-            best = e
 
-    # threshold: similarity gate + entity confidence gate
-    if not best:
+
+def _overlap(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+    return max(0, min(a[1], b[1]) - max(a[0], b[0]))
+
+
+def _span_len(s: Tuple[int, int]) -> int:
+    return max(0, s[1] - s[0])
+
+
+def _find_first_span(haystack: str, needle: str) -> Optional[Tuple[int, int]]:
+    if not haystack or not needle:
         return None
-    if best_score < 0.75:
+    idx = haystack.find(needle)
+    if idx < 0:
+        return None
+    return (idx, idx + len(needle))
+
+
+def _match_en_entity_by_anchor(
+    normalized_text_en: str,
+    en_entities: List[Dict[str, Any]],
+    anchor_en: str,
+    anchor_span_en: Optional[Dict[str, int]],
+) -> Optional[Dict[str, Any]]:
+    """
+    Anchor-first matching
+    Returns best en entity dict or None.
+    """
+    if not normalized_text_en or not en_entities:
         return None
 
-    return best
+    # substring-based
+    if anchor_en:
+        span = _find_first_span(normalized_text_en, anchor_en)
+        if span:
+            a = span
+            best = None
+            best_score = 0.0
+            for e in en_entities:
+                try:
+                    es = (int(e["start"]), int(e["end"]))
+                except Exception:
+                    continue
+                ov = _overlap(a, es)
+                if ov <= 0:
+                    continue
+                coverage = ov / max(1, _span_len(a))
+                conf = float(e.get("confidence", 0.0))
+                score = 0.7 * coverage + 0.3 * conf
+                if score > best_score:
+                    best_score = score
+                    best = e
+            if best:
+                return best
+
+    return None
+
+
+def override_label(
+    base_label: str,
+    base_conf: float,
+    matched_en: Optional[Dict[str, Any]],
+) -> Tuple[str, float]:
+    """
+    Override rule:
+    - if anchor match exists, trust its label regardless of confidence
+    - keep confidence as the better of base vs anchor match to avoid regressions
+    """
+    if not matched_en:
+        return base_label, base_conf
+
+    en_label = str(matched_en.get("label", base_label))
+    en_conf = clamp01(float(matched_en.get("confidence", 0.0)))
+    return en_label, max(base_conf, en_conf)
+
 
 class NERService:
     def __init__(self) -> None:
@@ -78,6 +136,7 @@ class NERService:
         # ---- Pass 1: span candidates on original text (label is just a hint) ----
         try:
             raw_entities = self.engine.extract(text)
+            print("Pass 1 - extracted raw entities:", raw_entities)  # DEBUG
         except Exception as e:
             raw_entities = []
             errors.append({"stage": "ner_pass1", "message": str(e)})
@@ -93,12 +152,14 @@ class NERService:
                 {
                     "surface": surface,
                     "span": {"start": int(e.start), "end": int(e.end)},
-                    "ner": {"label": e.label, "confidence": clamp01(float(e.score))},
+                    "ner": {"label": str(e.label), "confidence": clamp01(float(e.score))},
                 }
             )
-        # ---- Pass 2: GPT produces (normalized_text_en + canonical_en per mention) ----
+        print("Base mentions after Pass 1:", base_mentions)  # DEBUG
+
+        # ---- Pass 2: GPT produces (normalized_text_en + canonical_en + anchor_en(+span)) ----
         try:
-            canon_out = await canonicalize_with_normalized_sentence(
+            canon_out = await canonicalize_with_anchors(
                 text=text,
                 lang=lang,
                 mentions=[{"surface": m["surface"], "span": m["span"]} for m in base_mentions],
@@ -108,7 +169,9 @@ class NERService:
             errors.append({"stage": "canonicalize", "message": str(e)})
 
         normalized_text_en = str(canon_out.get("normalized_text_en", "")).strip() or None
+        print("Canonicalization output:", canon_out)  # DEBUG
 
+        # mentions 정렬은 (start,end,surface) 키로 매칭
         canon_index: Dict[tuple[int, int, str], Dict[str, Any]] = {}
         for cm in canon_out.get("mentions", []):
             try:
@@ -122,31 +185,46 @@ class NERService:
         if normalized_text_en:
             try:
                 en_raw = self.engine.extract(normalized_text_en)
+                print("Pass 3 - extracted EN entities:", en_raw)  # DEBUG
                 for e in en_raw:
-                    en_entities.append({"text": e.text, "label": e.label, "confidence": clamp01(float(e.score))})
+                    en_entities.append(
+                        {
+                            "text": (e.text or ""),
+                            "start": int(e.start),
+                            "end": int(e.end),
+                            "label": str(e.label),
+                            "confidence": clamp01(float(e.score)),
+                        }
+                    )
             except Exception as e:
                 errors.append({"stage": "ner_pass3_en", "message": str(e)})
 
         mentions: List[Dict[str, Any]] = []
         for m in base_mentions:
             k = (int(m["span"]["start"]), int(m["span"]["end"]), str(m["surface"]))
-            cm = canon_index.get(k)
+            cm = canon_index.get(k) or {}
 
-            canon_en = (cm.get("canonical_en") if cm else m["surface"]) or m["surface"]
-            reason = (cm.get("reason") if cm else "unchanged") if cm else "unchanged"
+            canon_en = (cm.get("canonical_en") or "").strip() or m["surface"]
+            reason = (cm.get("reason") or "unknown")
+
+            anchor_en = (cm.get("anchor_en") or "").strip()  # ✅ 핵심
+            anchor_span_en = cm.get("anchor_span_en")  # ✅ {start,end} or None
 
             # default label from pass1
-            final_label = m["ner"]["label"]
-            final_conf = float(m["ner"]["confidence"])
+            base_label = str(m["ner"]["label"])
+            base_conf = clamp01(float(m["ner"]["confidence"]))
 
-            # try relabel using english NER if we have it
-            if en_entities and canon_en:
-                best = _best_relabel(str(canon_en), en_entities)
-                if best:
-                    # override only if relabel confidence is strong
-                    if float(best.get("confidence", 0.0)) >= 0.55:
-                        final_label = str(best["label"])
-                        final_conf = max(final_conf, float(best.get("confidence", 0.0)))
+            matched = None
+            if normalized_text_en and en_entities and anchor_en:
+                matched = _match_en_entity_by_anchor(
+                    normalized_text_en=normalized_text_en,
+                    en_entities=en_entities,
+                    anchor_en=anchor_en,
+                    anchor_span_en=anchor_span_en,
+                )
+                print(f"[Anchor Relabel] surface='{m['surface']}' anchor='{anchor_en}' matched={matched}")  # DEBUG
+
+            final_label, final_conf = override_label(base_label, base_conf, matched)
 
             mentions.append(
                 {
@@ -165,6 +243,7 @@ class NERService:
             "errors": errors,
         }
 
+
 @dataclass
 class SuggestionService:
     """
@@ -175,11 +254,8 @@ class SuggestionService:
       2) generic한 suffix(회의/정리/리뷰) completion
       3) NER 엔티티 및 인기 태그 기반 tag 추천
     """
-    def _history_completions(
-        self,
-        text: str,
-        history: Sequence[str],
-    ) -> list[SuggestItem]:
+
+    def _history_completions(self, text: str, history: Sequence[str]) -> list[SuggestItem]:
         text_norm = text.strip().lower()
         if not text_norm:
             return []
@@ -193,7 +269,6 @@ class SuggestionService:
                 continue
 
             phrase_norm = phrase_stripped.lower()
-            # 아주 단순한 prefix 기반 자동완성
             if phrase_norm.startswith(text_norm) and phrase_norm != text_norm:
                 if phrase_stripped in seen:
                     continue
@@ -231,15 +306,10 @@ class SuggestionService:
             )
         return items
 
-    def _tag_suggestions(
-        self,
-        entities: list[Entity],
-        popular_tags: Sequence[str],
-    ) -> list[SuggestItem]:
+    def _tag_suggestions(self, entities: list[Entity], popular_tags: Sequence[str]) -> list[SuggestItem]:
         items: list[SuggestItem] = []
         seen: set[str] = set()
 
-        # 현재 텍스트에서 뽑힌 엔티티를 tag 후보로
         for e in entities:
             if e.text in seen:
                 continue
@@ -252,7 +322,6 @@ class SuggestionService:
                 )
             )
 
-        # 과거에서 뽑힌 인기 태그
         for tag in popular_tags:
             if tag in seen:
                 continue
@@ -306,8 +375,8 @@ class SuggestionService:
         if not fragment_norm:
             return []
 
-        before = text[:cursor_ctx.token_start]
-        after = text[cursor_ctx.token_end:]
+        before = text[: cursor_ctx.token_start]
+        after = text[cursor_ctx.token_end :]
         seen: set[str] = set()
         items: list[SuggestItem] = []
 
@@ -320,38 +389,20 @@ class SuggestionService:
                 return
             if not candidate_norm.startswith(fragment_norm):
                 return
-            if (
-                candidate_norm == fragment_norm
-                and cursor_ctx.token_text.strip().lower() == candidate_norm
-            ):
+            if candidate_norm == fragment_norm and cursor_ctx.token_text.strip().lower() == candidate_norm:
                 return
             seen.add(candidate_norm)
             completed = f"{before}{candidate}{after}"
-            items.append(
-                SuggestItem(
-                    type="completion",
-                    text=completed,
-                    score=score,
-                )
-            )
+            items.append(SuggestItem(type="completion", text=completed, score=score))
 
         for ent in entities:
-            append_candidate(
-                ent.text,
-                constants.SCORE_COMPLETION_ENTITY_ACTIVE,
-            )
+            append_candidate(ent.text, constants.SCORE_COMPLETION_ENTITY_ACTIVE)
 
         for token, _freq in history_tokens:
-            append_candidate(
-                token,
-                constants.SCORE_COMPLETION_HISTORY_ACTIVE,
-            )
+            append_candidate(token, constants.SCORE_COMPLETION_HISTORY_ACTIVE)
 
         for tag in popular_tags:
-            append_candidate(
-                tag,
-                constants.SCORE_COMPLETION_POPULAR_ACTIVE,
-            )
+            append_candidate(tag, constants.SCORE_COMPLETION_POPULAR_ACTIVE)
 
         return items
 
@@ -366,8 +417,8 @@ class SuggestionService:
         if not cursor_ctx.at_token_boundary:
             return []
 
-        before = text[:cursor_ctx.cursor]
-        after = text[cursor_ctx.cursor:]
+        before = text[: cursor_ctx.cursor]
+        after = text[cursor_ctx.cursor :]
 
         def build_base() -> str:
             if not before:
@@ -376,12 +427,7 @@ class SuggestionService:
                 return before
             return f"{before} "
 
-        def append_candidate(
-            items_list: list[SuggestItem],
-            candidate: str,
-            score: float,
-            seen_texts: set[str],
-        ) -> None:
+        def append_candidate(items_list: list[SuggestItem], candidate: str, score: float, seen_texts: set[str]) -> None:
             candidate = candidate.strip()
             if not candidate:
                 return
@@ -395,48 +441,24 @@ class SuggestionService:
             if suggestion_text in seen_texts:
                 return
             seen_texts.add(suggestion_text)
-            items_list.append(
-                SuggestItem(
-                    type="completion",
-                    text=suggestion_text,
-                    score=score,
-                )
-            )
+            items_list.append(SuggestItem(type="completion", text=suggestion_text, score=score))
 
         items: list[SuggestItem] = []
         seen: set[str] = set()
 
         for ent in entities:
-            append_candidate(
-                items,
-                ent.text,
-                constants.SCORE_COMPLETION_NEXT_ENTITY,
-                seen,
-            )
+            append_candidate(items, ent.text, constants.SCORE_COMPLETION_NEXT_ENTITY, seen)
 
         for tag in popular_tags:
-            append_candidate(
-                items,
-                tag,
-                constants.SCORE_COMPLETION_NEXT_TAG,
-                seen,
-            )
+            append_candidate(items, tag, constants.SCORE_COMPLETION_NEXT_TAG, seen)
 
         for phrase in history:
             for token in simple_tokenize(phrase):
-                append_candidate(
-                    items,
-                    token,
-                    constants.SCORE_COMPLETION_NEXT_HISTORY,
-                    seen,
-                )
+                append_candidate(items, token, constants.SCORE_COMPLETION_NEXT_HISTORY, seen)
 
         return items
 
-    def _history_token_candidates(
-        self,
-        history: Sequence[str],
-    ) -> list[tuple[str, int]]:
+    def _history_token_candidates(self, history: Sequence[str]) -> list[tuple[str, int]]:
         tokens: dict[str, list[Any]] = {}
         for phrase in history:
             for token in simple_tokenize(phrase):
@@ -448,6 +470,7 @@ class SuggestionService:
                     tokens[key] = [token_clean, 1]
                 else:
                     tokens[key][1] += 1
+
         sorted_tokens = sorted(
             ((value[0], value[1]) for value in tokens.values()),
             key=lambda pair: pair[1],
@@ -455,21 +478,10 @@ class SuggestionService:
         )
         return sorted_tokens
 
-    def _popular_tag_candidates(
-        self,
-        popular_tags: Sequence[str],
-    ) -> list[str]:
-        return [
-            tag.strip()
-            for tag in popular_tags
-            if isinstance(tag, str) and len(tag.strip()) >= 2
-        ]
+    def _popular_tag_candidates(self, popular_tags: Sequence[str]) -> list[str]:
+        return [tag.strip() for tag in popular_tags if isinstance(tag, str) and len(tag.strip()) >= 2]
 
-    def _deduplicate_and_rank(
-        self,
-        suggestions: Sequence[SuggestItem],
-        current_text: str,
-    ) -> list[SuggestItem]:
+    def _deduplicate_and_rank(self, suggestions: Sequence[SuggestItem], current_text: str) -> list[SuggestItem]:
         current_norm = _normalize_text(current_text)
         best_by_text: dict[str, SuggestItem] = {}
 
@@ -482,18 +494,10 @@ class SuggestionService:
             if existing is None or existing.score < suggestion.score:
                 best_by_text[normalized] = suggestion
 
-        ranked = sorted(
-            best_by_text.values(),
-            key=lambda item: item.score,
-            reverse=True,
-        )
+        ranked = sorted(best_by_text.values(), key=lambda item: item.score, reverse=True)
         return ranked[: constants.MAX_SUGGESTIONS]
 
-    def generate(
-        self,
-        request: SuggestRequest,
-        entities: list[Entity],
-    ) -> list[SuggestItem]:
+    def generate(self, request: SuggestRequest, entities: list[Entity]) -> list[SuggestItem]:
         try:
             text = request.text
             ctx = request.context
@@ -506,17 +510,13 @@ class SuggestionService:
                 history = extra.get("history", []) or []
                 popular_tags = extra.get("popular_tags", []) or []
 
-            cursor_ctx = self._cursor_context(
-                text,
-                ctx.cursor_position if ctx else None,
-            )
+            cursor_ctx = self._cursor_context(text, ctx.cursor_position if ctx else None)
 
             history_tokens = self._history_token_candidates(history)
             popular_tag_candidates = self._popular_tag_candidates(popular_tags)
 
             suggestions: list[SuggestItem] = []
 
-            # 0) 현재 단어에 대해 NER 기반 자동완성
             suggestions.extend(
                 self._entity_completions_for_active_token(
                     text,
@@ -527,7 +527,6 @@ class SuggestionService:
                 )
             )
 
-            # 0-1) 다음 단어 추천
             suggestions.extend(
                 self._next_word_recommendations(
                     text,
@@ -538,25 +537,17 @@ class SuggestionService:
                 )
             )
 
-            # 1) 과거 history(이벤트 제목들) 기반 completion
             prefix_text = text[: cursor_ctx.cursor]
             suggestions.extend(self._history_completions(prefix_text, history))
-
-            # 2) generic suffix 기반 completion
             suggestions.extend(self._generic_completions(prefix_text))
+            suggestions.extend(self._tag_suggestions(entities, popular_tag_candidates))
 
-            # 3) 엔티티 + 인기 태그 기반 tag 추천
-            suggestions.extend(
-                self._tag_suggestions(entities, popular_tag_candidates)
-            )
-
-            # 중복 제거 + score 순 정렬
             return self._deduplicate_and_rank(suggestions, text)
 
         except Exception as exc:  # noqa: BLE001
             raise SuggestionError(str(exc)) from exc
 
 
-# “의존성 주입”까지는 아니고, 그냥 모듈 단위 싱글톤처럼 사용
+# module-level singletons
 ner_service = NERService()
 suggestion_service = SuggestionService()
