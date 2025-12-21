@@ -136,7 +136,6 @@ class NERService:
         # ---- Pass 1: span candidates on original text (label is just a hint) ----
         try:
             raw_entities = self.engine.extract(text)
-            print("Pass 1 - extracted raw entities:", raw_entities)  # DEBUG
         except Exception as e:
             raw_entities = []
             errors.append({"stage": "ner_pass1", "message": str(e)})
@@ -155,7 +154,6 @@ class NERService:
                     "ner": {"label": str(e.label), "confidence": clamp01(float(e.score))},
                 }
             )
-        print("Base mentions after Pass 1:", base_mentions)  # DEBUG
 
         # ---- Pass 2: GPT produces (normalized_text_en + canonical_en + anchor_en(+span)) ----
         try:
@@ -169,7 +167,6 @@ class NERService:
             errors.append({"stage": "canonicalize", "message": str(e)})
 
         normalized_text_en = str(canon_out.get("normalized_text_en", "")).strip() or None
-        print("Canonicalization output:", canon_out)  # DEBUG
 
         # mentions 정렬은 (start,end,surface) 키로 매칭
         canon_index: Dict[tuple[int, int, str], Dict[str, Any]] = {}
@@ -185,7 +182,6 @@ class NERService:
         if normalized_text_en:
             try:
                 en_raw = self.engine.extract(normalized_text_en)
-                print("Pass 3 - extracted EN entities:", en_raw)  # DEBUG
                 for e in en_raw:
                     en_entities.append(
                         {
@@ -222,7 +218,6 @@ class NERService:
                     anchor_en=anchor_en,
                     anchor_span_en=anchor_span_en,
                 )
-                print(f"[Anchor Relabel] surface='{m['surface']}' anchor='{anchor_en}' matched={matched}")  # DEBUG
 
             final_label, final_conf = override_label(base_label, base_conf, matched)
 

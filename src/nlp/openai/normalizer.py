@@ -129,7 +129,6 @@ async def canonicalize_with_anchors(
 
     payload = {"text": text, "lang": lang, "mentions": mentions}
     user_prompt = USER_PROMPT_TEMPLATE.format(payload=payload)
-    print("Canonicalization payload:", payload)  # DEBUG
     try:
         parsed: CanonicalizeOut = await asyncio.to_thread(_call_openai_sync, SYSTEM_PROMPT, user_prompt)
         normalized = (parsed.normalized_text_en or "").strip()
