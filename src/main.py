@@ -1,15 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.config import get_settings
+from src.config import settings
 from src.nlp.router import router as nlp_router
 
 def create_app() -> FastAPI:
-    settings = get_settings()
-
     app = FastAPI(
         title=settings.PROJECT_NAME,
         debug=settings.DEBUG,
+        version=settings.VERSION,
+        port=settings.PORT,
     )
 
     app.add_middleware(
