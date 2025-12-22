@@ -130,6 +130,10 @@ class NERService:
         self.engine = NEREngine(min_token_len=settings.NER_MIN_TOKEN_LEN)
 
     async def run(self, text: str, lang_hint: str | None) -> Dict[str, Any]:
+        import time
+
+        full_start_time = time.time()
+        print("NERService.run started at", full_start_time)
         errors: List[Dict[str, Any]] = []
         lang = detect_lang(text, lang_hint)
 
@@ -156,6 +160,8 @@ class NERService:
             )
 
         # ---- Pass 2: GPT produces (normalized_text_en + canonical_en + anchor_en(+span)) ----
+        start_time = time.time()
+        print("Starting canonicalization at", start_time)
         try:
             canon_out = await canonicalize_with_anchors(
                 text=text,
@@ -165,7 +171,8 @@ class NERService:
         except Exception as e:
             canon_out = {"normalized_text_en": "", "mentions": []}
             errors.append({"stage": "canonicalize", "message": str(e)})
-
+        end_time = time.time()
+        print("Finished canonicalization at", end_time, "took", end_time - start_time, "seconds")
         normalized_text_en = str(canon_out.get("normalized_text_en", "")).strip() or None
 
         # mentions 정렬은 (start,end,surface) 키로 매칭
@@ -230,6 +237,8 @@ class NERService:
                 }
             )
 
+        full_end_time = time.time()
+        print("NERService.run finished at", full_end_time, "took", full_end_time - full_start_time, "seconds")
         return {
             "text": text,
             "lang": lang,
