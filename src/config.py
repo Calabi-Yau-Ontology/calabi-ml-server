@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     NER_REQUEST_TIMEOUT_SEC: float = 8.0
 
     # GLiNER
-    GLINER_MODEL: str = "urchade/gliner_medium-v2.1"
+    GLINER_MODEL: str = "gliner-community/gliner_large-v2.5"#"urchade/gliner_medium-v2.1"
     GLINER_THRESHOLD: float = 0.1
 
 settings = Settings()
