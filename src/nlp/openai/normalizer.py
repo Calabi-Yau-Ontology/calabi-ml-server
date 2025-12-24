@@ -23,8 +23,6 @@ class OutMention(BaseModel):
 
     canonical_en: str
     anchor_en: str
-
-    anchor_span_en: Optional[Span] = None
     reason: Literal["abbr_expansion", "normalization", "unchanged", "unknown"]
 
 
@@ -98,7 +96,7 @@ async def canonicalize_with_anchors(
     Output:
       {
         "normalized_text_en": str,
-        "mentions": [{surface, span, canonical_en, anchor_en, anchor_span_en?, reason}...]
+        "mentions": [{surface, span, canonical_en, anchor_en, reason}...]
       }
 
     Guarantees:
@@ -121,7 +119,6 @@ async def canonicalize_with_anchors(
                     "span": span,
                     "canonical_en": canon,
                     "anchor_en": canon,  # best-effort
-                    "anchor_span_en": None,
                     "reason": reason,
                 }
             )
@@ -149,22 +146,16 @@ async def canonicalize_with_anchors(
             if om is None:
                 canon, reason = _fallback(surface)
                 anchor_en = canon
-                anchor_span_en = _safe_find_span(normalized, anchor_en)
             else:
-                canon = (om.canonical_en or "").strip() or surface
-                anchor_en = (om.anchor_en or "").strip() or canon
+                canon = (om.canonical_en or "").strip() #or surface
+                anchor_en = (om.anchor_en or "").strip() #or canon
                 reason = str(om.reason)
 
-                # if model didn't provide anchor_span, derive if possible
-                if om.anchor_span_en:
-                    anchor_span_en = {"start": om.anchor_span_en.start, "end": om.anchor_span_en.end}
-                else:
-                    anchor_span_en = _safe_find_span(normalized, anchor_en)
-
                 # hard rule: anchor_en must exist in normalized. If not, fallback safely.
-                if normalized and normalized.find(anchor_en) < 0:
-                    anchor_en = canon
-                    anchor_span_en = _safe_find_span(normalized, anchor_en)
+                # if normalized and normalized.find(anchor_en) < 0:
+                #     anchor_en = canon
+                if normalized and anchor_en and normalized.find(anchor_en) < 0:
+                    anchor_en = ""
 
             _CANON_CACHE[(lang, surface)] = (canon, anchor_en, reason)
 
@@ -174,7 +165,6 @@ async def canonicalize_with_anchors(
                     "span": span,
                     "canonical_en": canon,
                     "anchor_en": anchor_en,
-                    "anchor_span_en": anchor_span_en,
                     "reason": reason,
                 }
             )
@@ -194,7 +184,6 @@ async def canonicalize_with_anchors(
                     "span": span,
                     "canonical_en": canon,
                     "anchor_en": canon,
-                    "anchor_span_en": None,
                     "reason": reason,
                 }
             )

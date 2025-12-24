@@ -5,7 +5,7 @@ from langdetect import detect
 
 from src.config import settings
 from .models.ner_engine import NEREngine
-from .openai.normalizer import canonicalize_with_anchors  # ✅ 변경
+from .openai.normalizer import canonicalize_with_anchors  # 변경
 from .utils import clamp01
 
 from . import constants
@@ -71,7 +71,6 @@ def _match_en_entity_by_anchor(
     normalized_text_en: str,
     en_entities: List[Dict[str, Any]],
     anchor_en: str,
-    anchor_span_en: Optional[Dict[str, int]],
 ) -> Optional[Dict[str, Any]]:
     """
     Anchor-first matching
@@ -158,8 +157,8 @@ class NERService:
                     "ner": {"label": str(e.label), "confidence": clamp01(float(e.score))},
                 }
             )
-
-        # ---- Pass 2: GPT produces (normalized_text_en + canonical_en + anchor_en(+span)) ----
+        print("Pass 1:", base_mentions)
+        # ---- Pass 2: GPT produces (normalized_text_en + canonical_en + anchor_en) ----
         start_time = time.time()
         print("Starting canonicalization at", start_time)
         try:
@@ -174,7 +173,7 @@ class NERService:
         end_time = time.time()
         print("Finished canonicalization at", end_time, "took", end_time - start_time, "seconds")
         normalized_text_en = str(canon_out.get("normalized_text_en", "")).strip() or None
-
+        print("Pass 2:", normalized_text_en, canon_out.get("mentions", []))
         # mentions 정렬은 (start,end,surface) 키로 매칭
         canon_index: Dict[tuple[int, int, str], Dict[str, Any]] = {}
         for cm in canon_out.get("mentions", []):
@@ -183,7 +182,7 @@ class NERService:
                 canon_index[k] = cm
             except Exception:
                 continue
-
+        
         # ---- Pass 3: English re-labeling using GLiNER on normalized_text_en ----
         en_entities: List[Dict[str, Any]] = []
         if normalized_text_en:
@@ -199,19 +198,25 @@ class NERService:
                             "confidence": clamp01(float(e.score)),
                         }
                     )
+                print("Pass 3:", en_entities)
             except Exception as e:
                 errors.append({"stage": "ner_pass3_en", "message": str(e)})
 
         mentions: List[Dict[str, Any]] = []
         for m in base_mentions:
             k = (int(m["span"]["start"]), int(m["span"]["end"]), str(m["surface"]))
-            cm = canon_index.get(k) or {}
+            cm = canon_index.get(k)
 
-            canon_en = (cm.get("canonical_en") or "").strip() or m["surface"]
-            reason = (cm.get("reason") or "unknown")
-
-            anchor_en = (cm.get("anchor_en") or "").strip()  # ✅ 핵심
-            anchor_span_en = cm.get("anchor_span_en")  # ✅ {start,end} or None
+            if cm:
+                canon_en = (cm.get("canonical_en") or "").strip()
+                if not canon_en:
+                    continue  # canonical key missing -> skip mention
+                reason = (cm.get("reason") or "unknown")
+                anchor_en = (cm.get("anchor_en") or "").strip()
+            else:
+                canon_en = m["surface"]
+                reason = "fallback"
+                anchor_en = ""
 
             # default label from pass1
             base_label = str(m["ner"]["label"])
@@ -223,7 +228,6 @@ class NERService:
                     normalized_text_en=normalized_text_en,
                     en_entities=en_entities,
                     anchor_en=anchor_en,
-                    anchor_span_en=anchor_span_en,
                 )
 
             final_label, final_conf = override_label(base_label, base_conf, matched)
