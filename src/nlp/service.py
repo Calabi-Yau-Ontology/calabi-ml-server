@@ -203,6 +203,7 @@ class NERService:
                 errors.append({"stage": "ner_pass3_en", "message": str(e)})
 
         mentions: List[Dict[str, Any]] = []
+        seen_surface_label: set[tuple[str, str]] = set()
         for m in base_mentions:
             k = (int(m["span"]["start"]), int(m["span"]["end"]), str(m["surface"]))
             cm = canon_index.get(k)
@@ -231,6 +232,11 @@ class NERService:
                 )
 
             final_label, final_conf = override_label(base_label, base_conf, matched)
+
+            dedup_key = (m["surface"], final_label)
+            if dedup_key in seen_surface_label:
+                continue
+            seen_surface_label.add(dedup_key)
 
             mentions.append(
                 {
