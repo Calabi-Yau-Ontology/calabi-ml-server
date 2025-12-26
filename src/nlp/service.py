@@ -157,7 +157,6 @@ class NERService:
                     "ner": {"label": str(e.label), "confidence": clamp01(float(e.score))},
                 }
             )
-        print("Pass 1:", base_mentions)
         # ---- Pass 2: GPT produces (normalized_text_en + canonical_en + anchor_en) ----
         start_time = time.time()
         print("Starting canonicalization at", start_time)
@@ -173,7 +172,6 @@ class NERService:
         end_time = time.time()
         print("Finished canonicalization at", end_time, "took", end_time - start_time, "seconds")
         normalized_text_en = str(canon_out.get("normalized_text_en", "")).strip() or None
-        print("Pass 2:", normalized_text_en, canon_out.get("mentions", []))
         # mentions 정렬은 (start,end,surface) 키로 매칭
         canon_index: Dict[tuple[int, int, str], Dict[str, Any]] = {}
         for cm in canon_out.get("mentions", []):
@@ -198,7 +196,6 @@ class NERService:
                             "confidence": clamp01(float(e.score)),
                         }
                     )
-                print("Pass 3:", en_entities)
             except Exception as e:
                 errors.append({"stage": "ner_pass3_en", "message": str(e)})
 
