@@ -171,6 +171,7 @@ class NERService:
             errors.append({"stage": "canonicalize", "message": str(e)})
         end_time = time.time()
         print("Finished canonicalization at", end_time, "took", end_time - start_time, "seconds")
+        print("Canonicalization output:", canon_out)
         normalized_text_en = str(canon_out.get("normalized_text_en", "")).strip() or None
         # mentions 정렬은 (start,end,surface) 키로 매칭
         canon_index: Dict[tuple[int, int, str], Dict[str, Any]] = {}
@@ -227,6 +228,25 @@ class NERService:
                     en_entities=en_entities,
                     anchor_en=anchor_en,
                 )
+
+            # --- [변경] Fallback 시 개별 단어 재추론 로직 추가 ---
+            if not matched and base_label == "None":
+                print("No anchor match and base label is None, trying single-word re-inference for surface:", m["surface"], "canon_en:", canon_en)
+                # anchor 매칭도 안 되고, 1차 NER도 None인 경우 -> 단어 단위로 다시 추론
+                try:
+                    # GLiNER는 문맥 없이 단어만 넣어도 추론 가능
+                    # extract() 결과 리스트 중 가장 score 높은 것 채택
+                    single_preds = self.engine.extract(canon_en)#m["surface"])
+                    if single_preds:
+                        # score순 정렬되어 있다고 가정하거나 max score 찾기
+                        best_p = max(single_preds, key=lambda x: x.score)
+                        # 임계값(0.3 등) 이상일 때만 덮어쓰기
+                        if best_p.score > 0.3: 
+                            base_label = str(best_p.label)
+                            base_conf = clamp01(float(best_p.score))
+                except Exception:
+                    pass
+            # ----------------------------------------------------
 
             final_label, final_conf = override_label(base_label, base_conf, matched)
 
