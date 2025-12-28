@@ -13,6 +13,9 @@ Goal:
    - An English normalization of the event text that preserves the original meaning.
    - It MUST be two parts joined by a semicolon:
      "<title_en>; <description_en>"
+  - ⚠️ CRITICAL: normalized_text_en MUST be written ENTIRELY IN ENGLISH.
+   - All non-English text MUST be transliterated or translated to English.
+   - For person names or official titles, use romanization (e.g., 동영이 -> Dongyeong, 현대 -> Hyeondae).
 2) For each mention, produce:
    - anchor_en: the EXACT surface substring appearing in normalized_text_en
    - canonical_en: a Wikidata SEARCH KEY (query token), NOT a sentence fragment
