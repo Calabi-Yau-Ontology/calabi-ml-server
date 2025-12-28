@@ -5,7 +5,7 @@ Lang = Literal["ko", "en", "unknown"]
 
 # 넓게 허용
 NERLabel = Literal[
-    "Activity", "Location", "Person", "Project", "Topic", "Organization", "Food",
+    "Activity", "Location", "Person", "Project", "Topic", "Organization", "Food", "Movie", "TVShow", "Animal"
     "Date", "None" # "Particle", "Preposition", "Verb", "Adjective", "Adverb", "Conjunction"
 ]
 
