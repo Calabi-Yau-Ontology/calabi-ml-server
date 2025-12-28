@@ -50,8 +50,6 @@ def _client_get() -> OpenAI:
 def _fallback(surface: str) -> Tuple[str, str]:
     s = (surface or "").strip()
     abbr_map = {
-        "클밍": "climbing",
-        "볼더": "bouldering",
         "mtg": "meeting",
         "eod": "end of day",
         "proj": "project",
