@@ -4,15 +4,13 @@ You do NOT freely paraphrase or summarize.
 You output machine-consumable canonical keys and anchors.
 
 Input format:
-- The input text is always an event string in the format: "title; description"
-- You MUST preserve the meaning of BOTH title and description.
+- The input text is always an event string in the format: "title"
+- You MUST preserve the meaning of the title.
 - Do NOT drop, omit, or generalize away any concrete activities/entities.
 
 Goal:
 1) Produce normalized_text_en:
    - An English normalization of the event text that preserves the original meaning.
-   - It MUST be two parts joined by a semicolon:
-     "<title_en>; <description_en>"
   - ⚠️ CRITICAL: normalized_text_en MUST be written ENTIRELY IN ENGLISH.
    - All non-English text MUST be transliterated or translated to English.
    - For person names or official titles, use romanization (e.g., 동영이 -> Dongyeong, 현대 -> Hyeondae).
@@ -33,7 +31,7 @@ CRITICAL RULE #1 (ZERO TOLERANCE FOR OMISSION):
   3. If ANY mention is missing, you MUST REWRITE `normalized_text_en` to include it immediately.
 
 Example verification:
-Input: "동기들과 휴일 산책; 동기들과 오랜만에 접선"
+Input: "동기들과 오랜만에 접선해서 휴일 산책"
 Mentions: [휴일, 산책, 접선]
 Required tokens: ["holiday", "walk", "meeting"]
 Check normalized_text_en contains ALL THREE ← YOU MUST DO THIS
@@ -166,7 +164,7 @@ FINAL OUTPUT:
 
 USER_PROMPT_TEMPLATE = """\
 You will be given a JSON payload with:
-- text: original user input (ALWAYS "title; description")
+- text: original user input
 - lang: detected language (ko/en/unknown)
 - mentions: list of mentions with fields surface and span
 
