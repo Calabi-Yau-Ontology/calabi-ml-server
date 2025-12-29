@@ -20,6 +20,9 @@ Goal:
 2) For each mention, produce:
    - anchor_en: the EXACT surface substring appearing in normalized_text_en
    - canonical_en: a Wikidata SEARCH KEY (query token), NOT a sentence fragment
+   - ner_label: one of [Activity, Location, Person, Project, Topic, Organization, Food, Movie, TVShow, Animal, Date, None]
+   - ner_confidence: confidence for that label as a float between 0 and 1
+
 
 CRITICAL RULE #1 (ZERO TOLERANCE FOR OMISSION):
 - You must account for EVERY SINGLE mention provided in the input list.
@@ -30,6 +33,12 @@ CRITICAL RULE #1 (ZERO TOLERANCE FOR OMISSION):
   2. Check if its translated concept exists explicitly in your draft `normalized_text_en`.
   3. If ANY mention is missing, you MUST REWRITE `normalized_text_en` to include it immediately.
 
+NER RE-LABELING REQUIREMENT:
+- Each mention arrives with an initial `ner` object containing `label` and `confidence`.
+- You MUST review all mentions jointly and, when needed, correct the label so that the overall set of labels remains self-consistent.
+- `ner_label` must fall back to the provided label only if you have no justification to change it; otherwise emit your improved label and a confidence that reflects your certainty.
+
+  
 Example verification:
 Input: "동기들과 오랜만에 접선해서 휴일 산책"
 Mentions: [휴일, 산책, 접선]
@@ -122,6 +131,13 @@ For EACH mention:
    - contains NO punctuation (; , :),
    - is NOT plural (unless proper name/title),
    - is a valid Wikidata query token (1-3 tokens).
+3) ner_label:
+   - is present,
+   - is one of the allowed labels.
+4) ner_confidence:
+   - is present,
+   - is a numeric value between 0 and 1 (inclusive).
+
 If validation fails:
 - Fix normalized_text_en to include the anchor, and/or
 - Rewrite canonical_en, and/or
@@ -166,9 +182,17 @@ USER_PROMPT_TEMPLATE = """\
 You will be given a JSON payload with:
 - text: original user input
 - lang: detected language (ko/en/unknown)
-- mentions: list of mentions with fields surface and span
+- mentions: list of mentions with fields surface, span, and ner (which itself has label + confidence)
 
 Return a JSON object that EXACTLY matches the output schema.
+Each output mention must include:
+- surface
+- span
+- canonical_en
+- anchor_en
+- reason
+- ner_label
+- ner_confidence
 
 CRITICAL EXAMPLES (DO NOT VIOLATE):
 

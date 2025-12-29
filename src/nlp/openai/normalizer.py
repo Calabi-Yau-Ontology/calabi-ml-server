@@ -25,6 +25,9 @@ class OutMention(BaseModel):
     anchor_en: str
     reason: Literal["abbr_expansion", "normalization", "unchanged", "unknown"]
 
+    ner_label: Optional[str] = None
+    ner_confidence: Optional[float] = None
+
 
 class CanonicalizeOut(BaseModel):
     normalized_text_en: str
@@ -123,6 +126,8 @@ async def canonicalize_with_anchors(
                     "canonical_en": canon,
                     "anchor_en": canon,  # best-effort
                     "reason": reason,
+                    "ner_label": None,
+                    "ner_confidence": None,
                 }
             )
         return {"normalized_text_en": text if lang == "en" else "", "mentions": out}
@@ -153,12 +158,17 @@ async def canonicalize_with_anchors(
                 canon = (om.canonical_en or "").strip() #or surface
                 anchor_en = (om.anchor_en or "").strip() #or canon
                 reason = str(om.reason)
+                ner_label = (om.ner_label or "").strip()
+                ner_confidence = om.ner_confidence
 
                 # hard rule: anchor_en must exist in normalized. If not, fallback safely.
                 # if normalized and normalized.find(anchor_en) < 0:
                 #     anchor_en = canon
                 if normalized and anchor_en and normalized.find(anchor_en) < 0:
                     anchor_en = ""
+                else:
+                    ner_label = ""
+                    ner_confidence = None
 
             _CANON_CACHE[(lang, surface)] = (canon, anchor_en, reason)
 
@@ -169,6 +179,8 @@ async def canonicalize_with_anchors(
                     "canonical_en": canon,
                     "anchor_en": anchor_en,
                     "reason": reason,
+                    "ner_label": ner_label or None,
+                    "ner_confidence": ner_confidence,
                 }
             )
 
@@ -188,6 +200,8 @@ async def canonicalize_with_anchors(
                     "canonical_en": canon,
                     "anchor_en": canon,
                     "reason": reason,
+                    "ner_label": None,
+                    "ner_confidence": None,
                 }
             )
         return {"normalized_text_en": text if lang == "en" else "", "mentions": out}
