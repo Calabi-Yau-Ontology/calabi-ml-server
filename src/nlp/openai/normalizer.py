@@ -43,7 +43,11 @@ def _enabled() -> bool:
 def _client_get() -> OpenAI:
     global _client
     if _client is None:
-        _client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        # _client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        _client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=settings.OPENROUTER_API_KEY,
+        )
     return _client
 
 
@@ -62,7 +66,8 @@ def _fallback(surface: str) -> Tuple[str, str]:
 def _call_openai_sync(system_prompt: str, user_prompt: str) -> CanonicalizeOut:
     client = _client_get()
     resp = client.responses.parse(
-        model=settings.OPENAI_MODEL,
+        # model=settings.OPENAI_MODEL,
+        model=settings.OPENROUTER_MODEL,
         input=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},

@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     CANONICALIZATION_ENABLED: bool = False
     OPENAI_API_KEY: str | None = None
     OPENAI_MODEL: str = "gpt-4o-mini"#"gpt-4.1-nano"#"gpt-4o-mini"
+    OPENROUTER_API_KEY: str | None = None
+    OPENROUTER_MODEL: str = "google/gemini-2.0-flash-001"#"google/gemini-2.0-flash-exp:free"
 
     # NER
     NER_MAX_MENTIONS: int = 12
