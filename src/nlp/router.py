@@ -6,12 +6,6 @@ from .dtos import (
     SuggestRequest,
     SuggestResponse,
 )
-from .schemas import (
-    NERRequest,
-    NERResponse,
-    SuggestRequest,
-    SuggestResponse,
-)
 from .service import ner_service, suggestion_service
 
 router = APIRouter(
@@ -20,12 +14,9 @@ router = APIRouter(
 )
 
 @router.post("/ner", response_model=NERResponse)
-async def run_ner(payload: NERRequest) -> NERResponse:
-    """
-    단일 텍스트에 대한 NER 수행.
-    """
-    entities = ner_service.extract_entities(payload.text)
-    return NERResponse(entities=entities)
+async def ner(payload: NERRequest) -> NERResponse:
+    out = await ner_service.run(text=payload.text, lang_hint=payload.lang_hint)
+    return NERResponse(**out)
 
 @router.post("/suggest", response_model=SuggestResponse)
 async def suggest_terms(payload: SuggestRequest) -> SuggestResponse:
@@ -37,4 +28,3 @@ async def suggest_terms(payload: SuggestRequest) -> SuggestResponse:
     entities = ner_service.extract_entities(payload.text)
     suggestions = suggestion_service.generate(payload, entities)
     return SuggestResponse(suggestions=suggestions, entities=entities)
-

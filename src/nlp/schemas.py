@@ -1,21 +1,49 @@
 from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
-# ---------- NER ----------
+Lang = Literal["ko", "en", "unknown"]
 
-class NERRequest(BaseModel):
-    text: str = Field(..., description="분석할 원문 텍스트")
-    
+# 넓게 허용
+NERLabel = Literal[
+    "Activity", "Location", "Person", "Project", "Topic", "Organization", "Food", "Movie", "TVShow", "Animal"
+    "Date", "None" # "Particle", "Preposition", "Verb", "Adjective", "Adverb", "Conjunction"
+]
+
+class Span(BaseModel):
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+
+class NERInfo(BaseModel):
+    label: NERLabel
+    confidence: float = Field(ge=0.0, le=1.0)
+
+class CanonicalInfo(BaseModel):
+    en: str
+    reason: Optional[str] = None
+
+class Mention(BaseModel):
+    surface: str
+    span: Span
+    ner: NERInfo
+    canonical: CanonicalInfo
+
+# for OpenAI normalizer output
+
+class OutMention(BaseModel):
+    surface: str
+    span: Span
+    canonical_en: str
+    reason: Literal["abbr_expansion", "normalization", "unchanged", "unknown"]
+
+# ---------- old schemas ----------
+
 class Entity(BaseModel):
     text: str
     label: str = Field(..., description="엔티티 타입")
     start: int = Field(..., description="원문 상 시작 인덱스")
     end: int = Field(..., description="원문 상 끝 인덱스 (exclusive)")
 
-class NERResponse(BaseModel):
-    entities: list[Entity]
-
-# ---------- Suggest ----------
+## ---------- Suggest ----------
 
 class SuggestContext(BaseModel):
     field: Optional[str] = Field(
@@ -31,16 +59,7 @@ class SuggestContext(BaseModel):
         description="추가 컨텍스트",
     )
 
-class SuggestRequest(BaseModel):
-    user_id: str
-    text: str
-    context: Optional[SuggestContext] = None
-
 class SuggestItem(BaseModel):
     type: Literal["completion", "tag", "entity"]
     text: str
     score: float
-
-class SuggestResponse(BaseModel):
-    suggestions: list[SuggestItem]
-    entities: list[Entity]
