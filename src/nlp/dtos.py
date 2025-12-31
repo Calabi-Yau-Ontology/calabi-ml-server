@@ -1,8 +1,7 @@
 from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
-from .schemas import Entity, Lang, Mention, OutMention
-from .schemas import SuggestContext, SuggestItem
+from .schemas import Lang, Mention, OutMention
 
 # for OpenAI normalizer output
 
@@ -20,12 +19,3 @@ class NERResponse(BaseModel):
     normalized_text_en: Optional[str] = None
     mentions: List[Mention]
     errors: List[Dict[str, Any]] = Field(default_factory=list)
-
-class SuggestRequest(BaseModel):
-    user_id: str
-    text: str
-    context: Optional[SuggestContext] = None
-
-class SuggestResponse(BaseModel):
-    suggestions: list[SuggestItem]
-    entities: list[Entity]
