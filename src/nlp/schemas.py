@@ -1,4 +1,4 @@
-from typing import Any, Literal, Optional
+from typing import Literal, Optional, Tuple, get_args
 from pydantic import BaseModel, Field
 
 Lang = Literal["ko", "en", "unknown"]
@@ -9,13 +9,15 @@ NERLabel = Literal[
     "Date", "None" # "Particle", "Preposition", "Verb", "Adjective", "Adverb", "Conjunction"
 ]
 
+NER_LABELS: Tuple[str, ...] = tuple(get_args(NERLabel))
+
 class Span(BaseModel):
     start: int = Field(ge=0)
     end: int = Field(ge=0)
 
 class NERInfo(BaseModel):
     label: NERLabel
-    confidence: float = Field(ge=0.0, le=1.0)
+    # confidence: float = Field(ge=0.0, le=1.0)
 
 class CanonicalInfo(BaseModel):
     en: str
@@ -31,35 +33,7 @@ class Mention(BaseModel):
 
 class OutMention(BaseModel):
     surface: str
-    span: Span
+    label: NERLabel
     canonical_en: str
+    anchor_en: str
     reason: Literal["abbr_expansion", "normalization", "unchanged", "unknown"]
-
-# ---------- old schemas ----------
-
-class Entity(BaseModel):
-    text: str
-    label: str = Field(..., description="엔티티 타입")
-    start: int = Field(..., description="원문 상 시작 인덱스")
-    end: int = Field(..., description="원문 상 끝 인덱스 (exclusive)")
-
-## ---------- Suggest ----------
-
-class SuggestContext(BaseModel):
-    field: Optional[str] = Field(
-        default=None,
-        description="어느 필드인지 (예: title, description)",
-    )
-    cursor_position: Optional[int] = Field(
-        default=None,
-        description="커서 위치 (선택)",
-    )
-    extra: dict[str, Any] = Field(
-        default_factory=dict,
-        description="추가 컨텍스트",
-    )
-
-class SuggestItem(BaseModel):
-    type: Literal["completion", "tag", "entity"]
-    text: str
-    score: float

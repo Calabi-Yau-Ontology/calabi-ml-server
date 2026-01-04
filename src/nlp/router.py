@@ -2,29 +2,27 @@ from fastapi import APIRouter
 
 from .dtos import (
     NERRequest,
-    NERResponse,
-    SuggestRequest,
-    SuggestResponse,
+    NERResponse
 )
-from .service import ner_service, suggestion_service
+from .service import ner_service
 
 router = APIRouter(
     prefix="/nlp",
     tags=["nlp"],
 )
 
-@router.post("/ner", response_model=NERResponse)
+@router.post(
+    "/ner",
+    response_model=NERResponse,
+    summary="Run multilingual NER",
+    response_description="Normalized text, extracted mentions, and errors if any.",
+)
 async def ner(payload: NERRequest) -> NERResponse:
+    """
+    Execute the NER pipeline:
+    1. 언어 감지
+    2. OpenRouter 기반 canonicalization + labeling
+    3. surface 기반 span 재탐색
+    """
     out = await ner_service.run(text=payload.text, lang_hint=payload.lang_hint)
     return NERResponse(**out)
-
-@router.post("/suggest", response_model=SuggestResponse)
-async def suggest_terms(payload: SuggestRequest) -> SuggestResponse:
-    """
-    일정 입력 중 용어/문구 추천.
-    - 내부적으로 NER 한 번 수행 후
-    - NER 결과 + 텍스트 기반 추천 생성
-    """
-    entities = ner_service.extract_entities(payload.text)
-    suggestions = suggestion_service.generate(payload, entities)
-    return SuggestResponse(suggestions=suggestions, entities=entities)

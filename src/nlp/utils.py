@@ -43,11 +43,3 @@ def similarity(a: str, b: str) -> float:
     if a2 in b2 or b2 in a2:
         return 0.92
     return SequenceMatcher(None, a2, b2).ratio()
-
-# ----- old utils -----
-
-def simple_tokenize(text: str) -> list[str]:
-    """
-    나중에 교체
-    """
-    return text.split()

@@ -2,42 +2,20 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from cachetools import LRUCache
 from openai import OpenAI
-from pydantic import BaseModel, Field
-
 from src.config import settings
+from src.nlp.dtos import CanonicalizeOut
+from src.nlp.schemas import NER_LABELS
 from .prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
 
-
-class Span(BaseModel):
-    start: int = Field(ge=0)
-    end: int = Field(ge=0)
-
-
-class OutMention(BaseModel):
-    surface: str
-    span: Span
-
-    canonical_en: str
-    anchor_en: str
-    reason: Literal["abbr_expansion", "normalization", "unchanged", "unknown"]
-
-
-class CanonicalizeOut(BaseModel):
-    normalized_text_en: str
-    mentions: List[OutMention]
-
-
-# cache: (lang, surface) -> (canonical_en, anchor_en, reason)
-_CANON_CACHE: LRUCache = LRUCache(maxsize=2048)
 _client: Optional[OpenAI] = None
 
 
 def _enabled() -> bool:
-    return bool(settings.CANONICALIZATION_ENABLED and settings.OPENAI_API_KEY)
+    has_key = bool(settings.OPENROUTER_API_KEY)
+    return bool(settings.CANONICALIZATION_ENABLED and has_key)
 
 
 def _client_get() -> OpenAI:
@@ -49,18 +27,6 @@ def _client_get() -> OpenAI:
             api_key=settings.OPENROUTER_API_KEY,
         )
     return _client
-
-
-def _fallback(surface: str) -> Tuple[str, str]:
-    s = (surface or "").strip()
-    abbr_map = {
-        "mtg": "meeting",
-        "eod": "end of day",
-        "proj": "project",
-    }
-    canon = abbr_map.get(s.lower(), abbr_map.get(s, s))
-    reason = "abbr_expansion" if canon != s else "unchanged"
-    return canon, reason
 
 
 def _call_openai_sync(system_prompt: str, user_prompt: str) -> CanonicalizeOut:
@@ -78,94 +44,50 @@ def _call_openai_sync(system_prompt: str, user_prompt: str) -> CanonicalizeOut:
     return resp.output_parsed
 
 
-def _safe_find_span(haystack: str, needle: str) -> Optional[Dict[str, int]]:
-    if not haystack or not needle:
-        return None
-    idx = haystack.find(needle)
-    if idx < 0:
-        return None
-    return {"start": idx, "end": idx + len(needle)}
-
-
 async def canonicalize_with_anchors(
     text: str,
     lang: str,
-    mentions: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """
-    Input mentions:
-      [{ "surface": str, "span": {"start": int, "end": int} }, ...]
-
-    Output:
-      {
-        "normalized_text_en": str,
-        "mentions": [{surface, span, canonical_en, anchor_en, reason}...]
-      }
-
-    Guarantees:
-    - never throws (best-effort)
-    - preserves input surface/span exactly in output mentions
+    Calls OpenAI (via OpenRouter) to produce normalized_text_en and mention data.
     """
-    if not mentions:
+    text = text or ""
+    if not text.strip():
+        print("In canonicalize_with_anchors: empty text")
         return {"normalized_text_en": "", "mentions": []}
 
-    # disabled -> fallback only (no anchors guaranteed)
     if not _enabled():
-        out: List[Dict[str, Any]] = []
-        for m in mentions:
-            surface = str(m.get("surface", "")).strip()
-            span = m.get("span") or {"start": 0, "end": 0}
-            canon, reason = _fallback(surface)
-            out.append(
-                {
-                    "surface": surface,
-                    "span": span,
-                    "canonical_en": canon,
-                    "anchor_en": canon,  # best-effort
-                    "reason": reason,
-                }
-            )
-        return {"normalized_text_en": text if lang == "en" else "", "mentions": out}
+        print("In canonicalize_with_anchors: disabled, returning empty output")
+        return {"normalized_text_en": "", "mentions": []}
 
-    payload = {"text": text, "lang": lang, "mentions": mentions}
+    payload = {"text": text, "lang": lang, "labels": list(NER_LABELS)}
     user_prompt = USER_PROMPT_TEMPLATE.format(payload=payload)
     try:
-        parsed: CanonicalizeOut = await asyncio.to_thread(_call_openai_sync, SYSTEM_PROMPT, user_prompt)
+        parsed: CanonicalizeOut = await asyncio.to_thread(
+            _call_openai_sync,
+            SYSTEM_PROMPT,
+            user_prompt,
+        )
+        print("In canonicalize_with_anchors: API response:", parsed)
         normalized = (parsed.normalized_text_en or "").strip()
 
-        # map by (orig_start, orig_end, surface)
-        idx: Dict[Tuple[int, int, str], OutMention] = {}
-        for om in parsed.mentions:
-            idx[(om.span.start, om.span.end, om.surface)] = om
-
         out: List[Dict[str, Any]] = []
+        for om in parsed.mentions:
+            surface = (om.surface or "").strip()
+            if not surface:
+                continue
+            canon = (om.canonical_en or "").strip()
+            anchor_en = (om.anchor_en or "").strip()
+            reason = str(om.reason)
+            label = (om.label or "").strip()
 
-        for m in mentions:
-            surface = str(m.get("surface", "")).strip()
-            span = m.get("span") or {"start": 0, "end": 0}
-            key = (int(span.get("start", 0)), int(span.get("end", 0)), surface)
-
-            om = idx.get(key)
-            if om is None:
-                canon, reason = _fallback(surface)
-                anchor_en = canon
-            else:
-                canon = (om.canonical_en or "").strip() #or surface
-                anchor_en = (om.anchor_en or "").strip() #or canon
-                reason = str(om.reason)
-
-                # hard rule: anchor_en must exist in normalized. If not, fallback safely.
-                # if normalized and normalized.find(anchor_en) < 0:
-                #     anchor_en = canon
-                if normalized and anchor_en and normalized.find(anchor_en) < 0:
-                    anchor_en = ""
-
-            _CANON_CACHE[(lang, surface)] = (canon, anchor_en, reason)
+            if normalized and anchor_en and normalized.find(anchor_en) < 0:
+                anchor_en = ""
 
             out.append(
                 {
                     "surface": surface,
-                    "span": span,
+                    "label": label,
                     "canonical_en": canon,
                     "anchor_en": anchor_en,
                     "reason": reason,
@@ -174,20 +96,6 @@ async def canonicalize_with_anchors(
 
         return {"normalized_text_en": normalized, "mentions": out}
 
-    except Exception:
-        # total failure -> fallback
-        out: List[Dict[str, Any]] = []
-        for m in mentions:
-            surface = str(m.get("surface", "")).strip()
-            span = m.get("span") or {"start": 0, "end": 0}
-            canon, reason = _fallback(surface)
-            out.append(
-                {
-                    "surface": surface,
-                    "span": span,
-                    "canonical_en": canon,
-                    "anchor_en": canon,
-                    "reason": reason,
-                }
-            )
-        return {"normalized_text_en": text if lang == "en" else "", "mentions": out}
+    except Exception as e:
+        print("Exception in canonicalize_with_anchors:", e)
+        return {"normalized_text_en": "", "mentions": []}
