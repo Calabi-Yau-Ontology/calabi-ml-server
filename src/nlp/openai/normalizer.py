@@ -14,7 +14,7 @@ _client: Optional[OpenAI] = None
 
 
 def _enabled() -> bool:
-    has_key = bool(settings.OPENAI_API_KEY or settings.OPENROUTER_API_KEY)
+    has_key = bool(settings.OPENROUTER_API_KEY)
     return bool(settings.CANONICALIZATION_ENABLED and has_key)
 
 
