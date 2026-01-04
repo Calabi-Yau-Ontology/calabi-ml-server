@@ -31,6 +31,6 @@ class Mention(BaseModel):
 
 class OutMention(BaseModel):
     surface: str
-    span: Span
     canonical_en: str
+    anchor_en: str
     reason: Literal["abbr_expansion", "normalization", "unchanged", "unknown"]

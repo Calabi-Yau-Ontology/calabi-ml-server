@@ -1,3 +1,4 @@
+from collections import deque
 from typing import Any, Dict, List, Optional, Tuple
 
 from langdetect import detect
@@ -117,41 +118,36 @@ class NERService:
         raw_entities = raw_entities[: settings.NER_MAX_MENTIONS]
 
         base_mentions: List[Dict[str, Any]] = []
+        surface_hint_map: Dict[str, deque[Dict[str, Any]]] = {}
         for e in raw_entities:
             surface = (e.text or "").strip()
             if not surface:
                 continue
-            base_mentions.append(
-                {
-                    "surface": surface,
-                    "span": {"start": int(e.start), "end": int(e.end)},
-                    "ner": {"label": str(e.label), "confidence": clamp01(float(e.score))},
-                }
-            )
+            mention = {
+                "surface": surface,
+                "span": {"start": int(e.start), "end": int(e.end)},
+                "ner": {"label": str(e.label), "confidence": clamp01(float(e.score))},
+            }
+            base_mentions.append(mention)
+            dq = surface_hint_map.setdefault(surface, deque())
+            dq.append(mention)
         # ---- Pass 2: GPT produces (normalized_text_en + canonical_en + anchor_en) ----
         start_time = time.time()
         print("Starting canonicalization at", start_time)
+        mention_hints = [{"surface": m["surface"], "span": m["span"]} for m in base_mentions]
         try:
             canon_out = await canonicalize_with_anchors(
                 text=text,
                 lang=lang,
-                mentions=[{"surface": m["surface"], "span": m["span"]} for m in base_mentions],
+                mention_hints=mention_hints,
             )
         except Exception as e:
             canon_out = {"normalized_text_en": "", "mentions": []}
             errors.append({"stage": "canonicalize", "message": str(e)})
         end_time = time.time()
         print("Finished canonicalization at", end_time, "took", end_time - start_time, "seconds")
-        print("Canonicalization output:", canon_out)
         normalized_text_en = str(canon_out.get("normalized_text_en", "")).strip() or None
-        # mentions 정렬은 (start,end,surface) 키로 매칭
-        canon_index: Dict[tuple[int, int, str], Dict[str, Any]] = {}
-        for cm in canon_out.get("mentions", []):
-            try:
-                k = (int(cm["span"]["start"]), int(cm["span"]["end"]), str(cm["surface"]))
-                canon_index[k] = cm
-            except Exception:
-                continue
+        canon_mentions = canon_out.get("mentions", []) or []
         
         # ---- Pass 3: English re-labeling using GLiNER on normalized_text_en ----
         en_entities: List[Dict[str, Any]] = []
@@ -171,26 +167,42 @@ class NERService:
             except Exception as e:
                 errors.append({"stage": "ner_pass3_en", "message": str(e)})
 
+        def _pop_surface_hint(surface: str) -> Optional[Dict[str, Any]]:
+            dq = surface_hint_map.get(surface)
+            if not dq:
+                return None
+            try:
+                return dq.popleft()
+            except IndexError:
+                return None
+
         mentions: List[Dict[str, Any]] = []
         seen_surface_label: set[tuple[str, str]] = set()
-        for m in base_mentions:
-            k = (int(m["span"]["start"]), int(m["span"]["end"]), str(m["surface"]))
-            cm = canon_index.get(k)
+        for cm in canon_mentions:
+            surface = (cm.get("surface") or "").strip()
+            if not surface:
+                continue
+            canon_en = (cm.get("canonical_en") or "").strip()
+            if not canon_en:
+                continue
+            reason = (cm.get("reason") or "unknown")
+            anchor_en = (cm.get("anchor_en") or "").strip()
 
-            if cm:
-                canon_en = (cm.get("canonical_en") or "").strip()
-                if not canon_en:
-                    continue  # canonical key missing -> skip mention
-                reason = (cm.get("reason") or "unknown")
-                anchor_en = (cm.get("anchor_en") or "").strip()
+            hint_cache: Optional[Dict[str, Any]] = None
+
+            def _ensure_hint() -> Optional[Dict[str, Any]]:
+                nonlocal hint_cache
+                if hint_cache is None:
+                    hint_cache = _pop_surface_hint(surface)
+                return hint_cache
+
+            hint = _ensure_hint()
+            if hint:
+                base_label = str(hint["ner"]["label"])
+                base_conf = clamp01(float(hint["ner"]["confidence"]))
             else:
-                canon_en = m["surface"]
-                reason = "fallback"
-                anchor_en = ""
-
-            # default label from pass1
-            base_label = str(m["ner"]["label"])
-            base_conf = clamp01(float(m["ner"]["confidence"]))
+                base_label = "None"
+                base_conf = 0.0
 
             matched = None
             if normalized_text_en and en_entities and anchor_en:
@@ -200,36 +212,49 @@ class NERService:
                     anchor_en=anchor_en,
                 )
 
-            # --- [변경] Fallback 시 개별 단어 재추론 로직 추가 ---
             if not matched and base_label == "None":
-                print("No anchor match and base label is None, trying single-word re-inference for surface:", m["surface"], "canon_en:", canon_en)
-                # anchor 매칭도 안 되고, 1차 NER도 None인 경우 -> 단어 단위로 다시 추론
+                print(
+                    "No anchor match and base label is None, trying single-word re-inference for surface:",
+                    surface,
+                    "canon_en:",
+                    canon_en,
+                )
                 try:
-                    # GLiNER는 문맥 없이 단어만 넣어도 추론 가능
-                    # extract() 결과 리스트 중 가장 score 높은 것 채택
-                    single_preds = self.engine.extract(canon_en)#m["surface"])
+                    single_preds = self.engine.extract(canon_en)
                     if single_preds:
-                        # score순 정렬되어 있다고 가정하거나 max score 찾기
                         best_p = max(single_preds, key=lambda x: x.score)
-                        # 임계값(0.3 등) 이상일 때만 덮어쓰기
-                        if best_p.score > 0.3: 
+                        if best_p.score > 0.3:
                             base_label = str(best_p.label)
                             base_conf = clamp01(float(best_p.score))
                 except Exception:
                     pass
-            # ----------------------------------------------------
 
             final_label, final_conf = override_label(base_label, base_conf, matched)
 
-            dedup_key = (m["surface"], final_label)
+            dedup_key = (surface, final_label)
             if dedup_key in seen_surface_label:
                 continue
             seen_surface_label.add(dedup_key)
 
+            span_tuple = _find_first_span(text, surface)
+            if span_tuple is None:
+                hint = _ensure_hint()
+                if hint:
+                    try:
+                        span_tuple = (
+                            int(hint["span"]["start"]),
+                            int(hint["span"]["end"]),
+                        )
+                    except Exception:
+                        span_tuple = None
+            if span_tuple is None:
+                errors.append({"stage": "span_lookup", "surface": surface})
+                span_tuple = (0, 0)
+
             mentions.append(
                 {
-                    "surface": m["surface"],
-                    "span": m["span"],
+                    "surface": surface,
+                    "span": {"start": span_tuple[0], "end": span_tuple[1]},
                     "ner": {"label": final_label, "confidence": clamp01(final_conf)},
                     "canonical": {"en": str(canon_en), "reason": str(reason)},
                 }
