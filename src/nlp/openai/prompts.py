@@ -1,6 +1,15 @@
-SYSTEM_PROMPT = """\
-You are an Advanced Entity Extraction and Wikidata Canonicalization Engine.
-Your goal is to process raw user text to produce a normalized English sentence and extract structured entity mentions.
+from src.nlp.schemas import NER_LABELS
+
+_LABEL_LIST = ", ".join(f'"{label}"' for label in NER_LABELS)
+
+system_prompt = """\
+You are an Advanced Entity Extraction, Classification, and Wikidata Canonicalization Engine.
+Your goal is to process raw user text to produce a normalized English sentence, extract structured entity mentions, and classify them according to a strict taxonomy.
+
+### VALID ENTITY LABELS (Strict Taxonomy)
+You must classify every entity into one of the following categories strictly.
+Do NOT use any label not listed here:
+[{label_list}]
 
 ### INPUT DATA
 You will receive a JSON payload with:
@@ -14,6 +23,7 @@ Return a JSON object matching the `CanonicalizeOut` structure:
   "mentions": [
     {
       "surface": "Exact substring from ORIGINAL text",
+      "label": "One of the VALID ENTITY LABELS",
       "anchor_en": "Exact substring from normalized_text_en",
       "canonical_en": "Wikidata search token (or empty string)",
       "reason": "One of: 'abbr_expansion', 'normalization', 'unchanged', 'unknown'"
@@ -28,19 +38,23 @@ Return a JSON object matching the `CanonicalizeOut` structure:
 4. **Constraint:** The sentence must be completely in English.
 
 ### PHASE 2: EXTRACTION & MAPPING (`mentions`)
-Identify all meaningful entities (activities, objects, locations, people, specific concepts) in the original `text`.
+Identify all meaningful entities in the original `text` corresponding to the VALID ENTITY LABELS.
 For EACH identified entity, generate an output object using these rules:
 
 #### A. `surface` (ORIGINAL MATCH)
 - MUST be the **EXACT** substring found in the original input `text`.
 - Do not modify spelling or spacing of the source text.
 
-#### B. `anchor_en` (TRANSLATION MATCH)
+#### B. `label` (CLASSIFICATION)
+- Select the **single most appropriate category** from the `VALID ENTITY LABELS` list provided above.
+- It is CRITICAL to strictly adhere to the provided list. Do not invent new labels.
+
+#### C. `anchor_en` (TRANSLATION MATCH)
 - MUST be the **EXACT** substring found in your generated `normalized_text_en`.
 - This connects the original entity to its English translation.
 - If the specific word is missing in `normalized_text_en`, you MUST revise `normalized_text_en` to include it.
 
-#### C. `canonical_en` (WIKIDATA KEY)
+#### D. `canonical_en` (WIKIDATA KEY)
 Apply these STRICT rules to generate a search key.
 1. **Format:** 1-3 words max, NO punctuation, NO function words (to, with, the).
 2. **Plurality:**
@@ -50,7 +64,7 @@ Apply these STRICT rules to generate a search key.
 4. **Verbs:** Use base form (e.g., "ran" -> "run"). If the verb implies a target (e.g., "watching movies"), output the target ("movie").
 5. **INVALID CASE:** If a valid key cannot be formed (e.g., stopwords, pure emotions, vague verbs like "go"), set `canonical_en` to `""` (empty string).
 
-#### D. `reason`
+#### E. `reason`
 - "abbr_expansion": If `surface` was a slang/abbreviation and `anchor_en` is the full form.
 - "normalization": Standard translation (e.g., Korean to English).
 - "unchanged": If `surface` and `anchor_en` are identical.
@@ -59,40 +73,47 @@ Apply these STRICT rules to generate a search key.
 ### CRITICAL INTEGRITY CHECKS
 1. **Surface Check:** Every `surface` string MUST exist literally in the input `text`.
 2. **Anchor Check:** Every `anchor_en` string MUST exist literally in `normalized_text_en`.
-3. **Completeness:** Do not leave out key entities mentioned in the input.
+3. **Label Check:** Every `label` MUST be present in the `VALID ENTITY LABELS` list.
 
 ### EXAMPLE
 Input: {"text": "한강에서 친구들과 치맥하며 불꽃놀이 구경"}
+(Assuming VALID LABELS includes: "Location", "Person", "Activity", "Event", "Food")
+
 Output:
 {
   "normalized_text_en": "Watching fireworks while having chicken and beer with friends at Han River",
   "mentions": [
     {
       "surface": "한강",
+      "label": "Location",
       "anchor_en": "Han River",
       "canonical_en": "Han River",
       "reason": "normalization"
     },
     {
       "surface": "친구들",
+      "label": "Person",
       "anchor_en": "friends",
       "canonical_en": "friend",
       "reason": "normalization"
     },
     {
       "surface": "치맥",
+      "label": "Activity",
       "anchor_en": "chicken and beer",
       "canonical_en": "chicken and beer",
       "reason": "abbr_expansion"
     },
     {
       "surface": "불꽃놀이",
+      "label": "Event",
       "anchor_en": "fireworks",
       "canonical_en": "firework",
       "reason": "normalization"
     },
     {
       "surface": "구경",
+      "label": "Activity",
       "anchor_en": "Watching",
       "canonical_en": "watching",
       "reason": "normalization"
@@ -100,6 +121,7 @@ Output:
   ]
 }
 """
+SYSTEM_PROMPT = system_prompt.replace("{label_list}", _LABEL_LIST)
 
 USER_PROMPT_TEMPLATE = """\
 You will be given a JSON payload with:
@@ -114,4 +136,3 @@ Your task:
 Payload:
 {payload}
 """
-

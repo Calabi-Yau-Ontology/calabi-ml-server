@@ -2,22 +2,20 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from cachetools import LRUCache
 from openai import OpenAI
-
 from src.config import settings
 from src.nlp.dtos import CanonicalizeOut
+from src.nlp.schemas import NER_LABELS
 from .prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
 
-# cache: (lang, surface) -> (canonical_en, anchor_en, reason)
-_CANON_CACHE: LRUCache = LRUCache(maxsize=2048)
 _client: Optional[OpenAI] = None
 
 
 def _enabled() -> bool:
-    return bool(settings.CANONICALIZATION_ENABLED and settings.OPENROUTER_API_KEY)
+    has_key = bool(settings.OPENAI_API_KEY or settings.OPENROUTER_API_KEY)
+    return bool(settings.CANONICALIZATION_ENABLED and has_key)
 
 
 def _client_get() -> OpenAI:
@@ -29,18 +27,6 @@ def _client_get() -> OpenAI:
             api_key=settings.OPENROUTER_API_KEY,
         )
     return _client
-
-
-def _fallback(surface: str) -> Tuple[str, str]:
-    s = (surface or "").strip()
-    abbr_map = {
-        "mtg": "meeting",
-        "eod": "end of day",
-        "proj": "project",
-    }
-    canon = abbr_map.get(s.lower(), abbr_map.get(s, s))
-    reason = "abbr_expansion" if canon != s else "unchanged"
-    return canon, reason
 
 
 def _call_openai_sync(system_prompt: str, user_prompt: str) -> CanonicalizeOut:
@@ -61,48 +47,20 @@ def _call_openai_sync(system_prompt: str, user_prompt: str) -> CanonicalizeOut:
 async def canonicalize_with_anchors(
     text: str,
     lang: str,
-    mention_hints: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
-    Calls OpenAI API to produce:
-      {
-        "normalized_text_en": str,
-        "mentions": [{surface, canonical_en, anchor_en, reason}...]
-      }
-
-    mention_hints are optional span candidates used only for fallback when the API is disabled or fails.
+    Calls OpenAI (via OpenRouter) to produce normalized_text_en and mention data.
     """
     text = text or ""
-    mention_hints = mention_hints or []
     if not text.strip():
         print("In canonicalize_with_anchors: empty text")
         return {"normalized_text_en": "", "mentions": []}
 
-    def _fallback_from_hints() -> Dict[str, Any]:
-        out: List[Dict[str, Any]] = []
-        for m in mention_hints:
-            surface = str(m.get("surface", "")).strip()
-            if not surface:
-                continue
-            canon, reason = _fallback(surface)
-            _CANON_CACHE[(lang, surface)] = (canon, canon, reason)
-            out.append(
-                {
-                    "surface": surface,
-                    "canonical_en": canon,
-                    "anchor_en": canon,
-                    "reason": reason,
-                }
-            )
-        normalized = text if lang == "en" else ""
-        return {"normalized_text_en": normalized, "mentions": out}
-
-    # disabled -> fallback only
     if not _enabled():
-        print("In canonicalize_with_anchors: disabled, using fallback")
-        return _fallback_from_hints()
+        print("In canonicalize_with_anchors: disabled, returning empty output")
+        return {"normalized_text_en": "", "mentions": []}
 
-    payload = {"text": text, "lang": lang}
+    payload = {"text": text, "lang": lang, "labels": list(NER_LABELS)}
     user_prompt = USER_PROMPT_TEMPLATE.format(payload=payload)
     try:
         parsed: CanonicalizeOut = await asyncio.to_thread(
@@ -121,15 +79,15 @@ async def canonicalize_with_anchors(
             canon = (om.canonical_en or "").strip()
             anchor_en = (om.anchor_en or "").strip()
             reason = str(om.reason)
+            label = (om.label or "").strip()
 
             if normalized and anchor_en and normalized.find(anchor_en) < 0:
                 anchor_en = ""
 
-            _CANON_CACHE[(lang, surface)] = (canon, anchor_en or canon, reason)
-
             out.append(
                 {
                     "surface": surface,
+                    "label": label,
                     "canonical_en": canon,
                     "anchor_en": anchor_en,
                     "reason": reason,
@@ -140,4 +98,4 @@ async def canonicalize_with_anchors(
 
     except Exception as e:
         print("Exception in canonicalize_with_anchors:", e)
-        return _fallback_from_hints()
+        return {"normalized_text_en": "", "mentions": []}
