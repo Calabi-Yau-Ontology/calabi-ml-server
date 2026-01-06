@@ -39,7 +39,15 @@ Return a JSON object matching the `CanonicalizeOut` structure:
 
 ### PHASE 2: EXTRACTION & MAPPING (`mentions`)
 Identify all meaningful entities in the original `text` corresponding to the VALID ENTITY LABELS.
-For EACH identified entity, generate an output object using these rules:
+
+### ⚠️ EXCLUSION CRITERIA (DO NOT EXTRACT THESE)
+You must **IGNORE** and **NOT EXTRACT** the following types of words, even if they appear in the text:
+1. **Generic Verbs of Movement:** "go", "come", "leave", "arrive" (e.g., "가기", "가는 중", "왔다").
+2. **Generic Verbs of Perception/Action:** "see", "watch", "look", "do", "make" (e.g., "보기", "하기").
+   - *Exception:* Extract only if it is a specific named activity (e.g., "bird watching", "film making").
+3. **Auxiliary/Function Words:** Words that only serve grammatical purposes.
+
+For EACH identified entity (passing the exclusion criteria), generate an output object using these rules:
 
 #### A. `surface` (ORIGINAL MATCH)
 - MUST be the **EXACT** substring found in the original input `text`.
@@ -47,7 +55,7 @@ For EACH identified entity, generate an output object using these rules:
 
 #### B. `label` (CLASSIFICATION)
 - Select the **single most appropriate category** from the `VALID ENTITY LABELS` list provided above.
-- It is CRITICAL to strictly adhere to the provided list. Do not invent new labels.
+- **For 'Activity':** Only label **specific recreational, professional, or social events** (e.g., "camping", "meeting", "soccer"). Do NOT label generic verbs like "going" or "doing" as Activity.
 
 #### C. `anchor_en` (TRANSLATION MATCH)
 - MUST be the **EXACT** substring found in your generated `normalized_text_en`.
@@ -61,8 +69,8 @@ Apply these STRICT rules to generate a search key.
    - Common nouns: ALWAYS Singular (e.g., "friends" -> "friend").
    - Proper nouns/Titles: Keep Original (e.g., "The Beatles" -> "The Beatles").
 3. **Gerunds:** Activity nouns ending in -ing stay as -ing (e.g., "camping" -> "camping").
-4. **Verbs:** Use base form (e.g., "ran" -> "run"). If the verb implies a target (e.g., "watching movies"), output the target ("movie").
-5. **INVALID CASE:** If a valid key cannot be formed (e.g., stopwords, pure emotions, vague verbs like "go"), set `canonical_en` to `""` (empty string).
+4. **Verbs:** Use base form (e.g., "ran" -> "run").
+5. **INVALID CASE:** If the resulting key is a generic verb (e.g., "go", "do", "see") or a stopword, set `canonical_en` to `""` (empty string).
 
 #### E. `reason`
 - "abbr_expansion": If `surface` was a slang/abbreviation and `anchor_en` is the full form.
