@@ -30,6 +30,10 @@ class ConceptSample(BaseModel):
     conceptKey: str
     conceptType: str
     conceptName: str
+    sourceText: Optional[str] = None
+    normalizedTextEn: Optional[str] = None
+    surface: Optional[str] = None
+    span: Optional[Dict[str, int]] = None
     occurrences: Optional[int] = None
     examples: Optional[List[str]] = None
 
@@ -79,6 +83,7 @@ class ProposeRequest(BaseModel):
 
 
 class ProposeResponse(BaseModel):
+    ok: bool = True
     oClassesToAdd: List[SnapshotOClass] = Field(default_factory=list)
     subclassEdgesToAdd: List[SnapshotEdge] = Field(default_factory=list)
     classifications: List[Classification] = Field(default_factory=list)
@@ -110,6 +115,7 @@ class ClassifyRequest(BaseModel):
 
 
 class ClassifyResponse(BaseModel):
+    ok: bool = True
     classifications: List[Classification] = Field(default_factory=list)
     oClassesToAdd: List[SnapshotOClass] = Field(default_factory=list)
     subclassEdgesToAdd: List[SnapshotEdge] = Field(default_factory=list)

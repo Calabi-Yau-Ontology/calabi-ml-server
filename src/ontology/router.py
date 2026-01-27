@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from .dtos import (
     ProposeRequest,
@@ -6,6 +6,7 @@ from .dtos import (
     ClassifyRequest,
     ClassifyResponse,
 )
+from .service import ontology_service
 
 router = APIRouter(
     prefix="/ontology",
@@ -20,10 +21,9 @@ router = APIRouter(
 )
 async def propose(payload: ProposeRequest) -> ProposeResponse:
     """
-    Placeholder endpoint.
-    Commit 1 only provides schema and routing.
+    Propose taxonomy elements from CQs.
     """
-    raise HTTPException(status_code=501, detail="not_implemented")
+    return await ontology_service.propose(payload)
 
 
 @router.post(
@@ -33,7 +33,6 @@ async def propose(payload: ProposeRequest) -> ProposeResponse:
 )
 async def classify(payload: ClassifyRequest) -> ClassifyResponse:
     """
-    Placeholder endpoint.
-    Commit 1 only provides schema and routing.
+    Classify concepts into existing taxonomy.
     """
-    raise HTTPException(status_code=501, detail="not_implemented")
+    return await ontology_service.classify(payload)
