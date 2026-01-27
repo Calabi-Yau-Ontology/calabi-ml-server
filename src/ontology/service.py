@@ -76,7 +76,7 @@ class OntologyService:
     async def classify(self, payload: ClassifyRequest) -> ClassifyResponse:
         if not _enabled():
             return ClassifyResponse(
-                ok=False,
+                ok=(payload.mode == "existing_only"),
                 errors=[{"stage": "disabled", "message": "openrouter_key_missing"}],
             )
 
@@ -92,9 +92,12 @@ class OntologyService:
             )
         except Exception as e:
             return ClassifyResponse(
-                ok=False,
+                ok=(payload.mode == "existing_only"),
                 errors=[{"stage": "llm_call", "message": str(e)}],
             )
+
+        if parsed.errors is None:
+            parsed.errors = []
 
         if payload.mode == "existing_only":
             if parsed.oClassesToAdd or parsed.subclassEdgesToAdd:
@@ -107,8 +110,37 @@ class OntologyService:
                     }
                 )
 
+            allowed_ids = {c.id for c in payload.snapshot.oClasses if c.id}
+            if parsed.classifications:
+                kept = []
+                dropped = []
+                for item in parsed.classifications:
+                    if item.oClassId in allowed_ids:
+                        kept.append(item)
+                    else:
+                        dropped.append(
+                            {
+                                "conceptKey": item.conceptKey,
+                                "conceptType": item.conceptType,
+                                "conceptName": item.conceptName,
+                                "oClassId": item.oClassId,
+                            }
+                        )
+                if dropped:
+                    parsed.classifications = kept
+                    parsed.errors.append(
+                        {
+                            "stage": "validation",
+                            "message": "existing_only mode: stripped classifications not in snapshot",
+                            "droppedCount": len(dropped),
+                            "dropped": dropped[:50],
+                        }
+                    )
+
         if parsed.errors and payload.mode != "existing_only":
             parsed.ok = False
+        if payload.mode == "existing_only":
+            parsed.ok = True
 
         return parsed
 
