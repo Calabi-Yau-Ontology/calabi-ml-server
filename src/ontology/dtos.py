@@ -11,7 +11,6 @@ class SnapshotOClass(BaseModel):
     kind: Optional[str] = None
     isRoot: Optional[bool] = None
     description: Optional[str] = None
-    status: Optional[str] = None
     seedVersion: Optional[str] = None
 
 
@@ -42,6 +41,13 @@ class Classification(BaseModel):
     conceptKey: str
     conceptType: str
     conceptName: str
+    oClassId: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: Optional[str] = None
+
+
+class EventActivityClassification(BaseModel):
+    eventId: Optional[str] = None
     oClassId: str
     confidence: float = Field(ge=0.0, le=1.0)
     rationale: Optional[str] = None
@@ -95,6 +101,9 @@ class ClassifyRequest(BaseModel):
     concepts: List[ConceptSample] = Field(min_length=1)
     snapshot: Snapshot
     mode: Literal["existing_only", "allow_new_leaf"] = "existing_only"
+    eventId: Optional[str] = None
+    eventTitle: Optional[str] = None
+    eventNormalizedTextEn: Optional[str] = None
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -109,6 +118,7 @@ class ClassifyRequest(BaseModel):
                 ],
                 "snapshot": {"seedVersion": "0.1.1", "oClasses": [], "subclassEdges": []},
                 "mode": "existing_only",
+                "eventTitle": "Climbing with Alice",
             }
         }
     )
@@ -117,6 +127,7 @@ class ClassifyRequest(BaseModel):
 class ClassifyResponse(BaseModel):
     ok: bool = True
     classifications: List[Classification] = Field(default_factory=list)
+    eventActivities: List[EventActivityClassification] = Field(default_factory=list)
     oClassesToAdd: List[SnapshotOClass] = Field(default_factory=list)
     subclassEdgesToAdd: List[SnapshotEdge] = Field(default_factory=list)
     errors: List[Dict[str, Any]] = Field(default_factory=list)

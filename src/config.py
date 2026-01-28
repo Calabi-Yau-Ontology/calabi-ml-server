@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     # OPENAI_MODEL: str = "gpt-4o-mini"#"gpt-4.1-nano"#"gpt-4o-mini"
     OPENROUTER_API_KEY: str | None = None
     OPENROUTER_MODEL: str = "google/gemini-2.0-flash-001"#"google/gemini-2.0-flash-exp:free"
+    OPENROUTER_MODEL_LITE: str | None = None
 
     # # NER
     # NER_MAX_MENTIONS: int = 12
