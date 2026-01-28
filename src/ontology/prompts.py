@@ -63,12 +63,17 @@ Also classify the event title into a LEAF Activity OClass if event candidates ar
 - You must choose only from provided candidate lists.
 - If mode == "existing_only": do NOT add new classes or edges.
 - If mode == "allow_new_leaf": new leaf classes and subclass edges are allowed.
+- Respect scope:
+  - scope == "concept": do NOT return eventActivities.
+  - scope == "event": you may ignore concept classifications.
+  - scope == "both": return both when candidates exist.
 - Prefer higher-level leaves if ambiguous.
 - Use context fields when available:
   - sourceText (original title)
   - normalizedTextEn
   - surface + span
   - examples[] (recent titles)
+- If scope includes event, always return `eventActivities` (empty array if no activity).
 
 [Payload JSON]
 {payload}

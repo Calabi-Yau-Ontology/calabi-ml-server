@@ -100,14 +100,14 @@ class OntologyService:
     async def classify(self, payload: ClassifyRequest) -> ClassifyResponse:
         if not _enabled():
             return ClassifyResponse(
-                ok=(payload.mode == "existing_only"),
+                ok=False,
                 errors=[{"stage": "disabled", "message": "openrouter_key_missing"}],
             )
 
         roots = self._get_root_classes(payload)
         if not roots:
             return ClassifyResponse(
-                ok=(payload.mode == "existing_only"),
+                ok=False,
                 errors=[
                     {
                         "stage": "validation",
@@ -115,15 +115,27 @@ class OntologyService:
                     }
                 ],
             )
-        activity_roots = [c for c in roots if getattr(c, "facet", None) == "Activity"]
+        include_concept = payload.scope in ("concept", "both")
+        include_event = payload.scope in ("event", "both")
+        activity_roots = (
+            [c for c in roots if getattr(c, "facet", None) == "Activity"]
+            if include_event
+            else []
+        )
+        event_title = (
+            payload.eventTitle or self._infer_event_title(payload)
+            if include_event
+            else None
+        )
         root_payload = {
             "mode": payload.mode,
             "rootOClasses": [self._o_class_view(c) for c in roots],
             "conceptRootOClasses": [self._o_class_view(c) for c in roots],
             "eventRootOClasses": [self._o_class_view(c) for c in activity_roots],
-            "concepts": [c.model_dump() for c in payload.concepts],
-            "eventTitle": payload.eventTitle or self._infer_event_title(payload),
-            "eventNormalizedTextEn": payload.eventNormalizedTextEn,
+            "concepts": [c.model_dump() for c in payload.concepts] if include_concept else [],
+            "eventTitle": event_title,
+            "eventNormalizedTextEn": payload.eventNormalizedTextEn if include_event else None,
+            "scope": payload.scope,
         }
         root_prompt = CLASSIFY_ROOT_USER_PROMPT_TEMPLATE.format(
             payload=json.dumps(root_payload, ensure_ascii=False)
@@ -138,33 +150,39 @@ class OntologyService:
             )
         except Exception as e:
             return ClassifyResponse(
-                ok=(payload.mode == "existing_only"),
+                ok=False,
                 errors=[{"stage": "llm_call", "message": str(e)}],
             )
 
         allowed_root_ids = {c.id for c in roots}
-        root_errors: List[Dict[str, Any]] = root_selection.errors or []
+        root_warnings: List[Dict[str, Any]] = root_selection.errors or []
         concept_root_map: Dict[str, List[RootCandidate]] = {}
-        for entry in root_selection.conceptRoots:
-            concept_root_map[entry.conceptKey] = self._select_roots(
-                entry.roots, allowed_root_ids
-            )
-        event_roots = self._select_roots(
-            root_selection.eventRoots, {c.id for c in activity_roots}
+        if include_concept:
+            for entry in root_selection.conceptRoots:
+                concept_root_map[entry.conceptKey] = self._select_roots(
+                    entry.roots, allowed_root_ids
+                )
+        event_roots = (
+            self._select_roots(root_selection.eventRoots, {c.id for c in activity_roots})
+            if include_event
+            else []
         )
 
-        missing_concepts = [
-            c.conceptKey for c in payload.concepts if c.conceptKey not in concept_root_map
-        ]
-        if missing_concepts:
-            root_errors.append(
-                {
-                    "stage": "validation",
-                    "message": "root selection missing for some concepts",
-                    "missingCount": len(missing_concepts),
-                    "missing": missing_concepts[:50],
-                }
-            )
+        if include_concept:
+            missing_concepts = [
+                c.conceptKey
+                for c in payload.concepts
+                if c.conceptKey not in concept_root_map
+            ]
+            if missing_concepts:
+                root_warnings.append(
+                    {
+                        "stage": "validation",
+                        "message": "root selection missing for some concepts",
+                        "missingCount": len(missing_concepts),
+                        "missing": missing_concepts[:50],
+                    }
+                )
 
         stage2_payload = self._build_stage2_payload(
             payload,
@@ -172,18 +190,21 @@ class OntologyService:
             event_roots,
             roots,
             activity_roots,
-            root_errors,
+            root_warnings,
+            include_concept,
+            include_event,
         )
         if not stage2_payload.get("concepts") and not stage2_payload.get("event"):
-            root_errors.append(
+            root_warnings.append(
                 {
                     "stage": "validation",
                     "message": "no candidates for stage2 classification",
                 }
             )
             return ClassifyResponse(
-                ok=(payload.mode == "existing_only"),
-                errors=root_errors,
+                ok=True,
+                errors=[],
+                warnings=root_warnings,
             )
         stage2_prompt = CLASSIFY_USER_PROMPT_TEMPLATE.format(
             payload=json.dumps(stage2_payload, ensure_ascii=False)
@@ -197,20 +218,46 @@ class OntologyService:
             )
         except Exception as e:
             return ClassifyResponse(
-                ok=(payload.mode == "existing_only"),
+                ok=False,
                 errors=[{"stage": "llm_call", "message": str(e)}],
             )
 
         if parsed.errors is None:
             parsed.errors = []
-        if root_errors:
-            parsed.errors.extend(root_errors)
+        if parsed.warnings is None:
+            parsed.warnings = []
+        if root_warnings:
+            parsed.warnings.extend(root_warnings)
+
+        resolved_event_id = (
+            payload.eventId
+            or payload.eventTitle
+            or self._infer_event_title(payload)
+        )
+        if parsed.eventActivities is not None:
+            if not include_event:
+                parsed.eventActivities = []
+            elif not resolved_event_id:
+                if parsed.eventActivities:
+                    parsed.warnings.append(
+                        {
+                            "stage": "validation",
+                            "message": "event context missing; ignoring eventActivities",
+                        }
+                    )
+                parsed.eventActivities = []
+            else:
+                for item in parsed.eventActivities:
+                    item.eventId = resolved_event_id
+
+        if not include_concept and parsed.classifications is not None:
+            parsed.classifications = []
 
         if payload.mode == "existing_only":
             if parsed.oClassesToAdd or parsed.subclassEdgesToAdd:
                 parsed.oClassesToAdd = []
                 parsed.subclassEdgesToAdd = []
-                parsed.errors.append(
+                parsed.warnings.append(
                     {
                         "stage": "validation",
                         "message": "existing_only mode: stripped class/edge additions",
@@ -235,7 +282,7 @@ class OntologyService:
                         )
                 if dropped:
                     parsed.classifications = kept
-                    parsed.errors.append(
+                    parsed.warnings.append(
                         {
                             "stage": "validation",
                             "message": "existing_only mode: stripped classifications not in snapshot",
@@ -247,12 +294,6 @@ class OntologyService:
                 kept_events = []
                 dropped_events = []
                 for item in parsed.eventActivities:
-                    if item.eventId is None:
-                        item.eventId = (
-                            payload.eventId
-                            or payload.eventTitle
-                            or self._infer_event_title(payload)
-                        )
                     if item.oClassId in allowed_ids:
                         kept_events.append(item)
                     else:
@@ -264,7 +305,7 @@ class OntologyService:
                         )
                 if dropped_events:
                     parsed.eventActivities = kept_events
-                    parsed.errors.append(
+                    parsed.warnings.append(
                         {
                             "stage": "validation",
                             "message": "existing_only mode: stripped event activities not in snapshot",
@@ -273,10 +314,8 @@ class OntologyService:
                         }
                     )
 
-        if parsed.errors and payload.mode != "existing_only":
+        if parsed.errors:
             parsed.ok = False
-        if payload.mode == "existing_only":
-            parsed.ok = True
 
         return parsed
 
@@ -322,6 +361,8 @@ class OntologyService:
         all_roots: List[Any],
         activity_roots: List[Any],
         root_errors: List[Dict[str, Any]],
+        include_concept: bool,
+        include_event: bool,
     ) -> Dict[str, Any]:
         children_by_parent: Dict[str, List[str]] = {}
         for edge in payload.snapshot.subclassEdges:
@@ -342,26 +383,27 @@ class OntologyService:
             return leaves or [root_id]
 
         concept_items = []
-        for concept in payload.concepts:
-            roots = concept_root_map.get(concept.conceptKey, [])
-            if not roots:
-                root_errors.append(
+        if include_concept:
+            for concept in payload.concepts:
+                roots = concept_root_map.get(concept.conceptKey, [])
+                if not roots:
+                    root_errors.append(
+                        {
+                            "stage": "validation",
+                            "message": "no roots selected for concept",
+                            "conceptKey": concept.conceptKey,
+                        }
+                    )
+                    continue
+                concept_items.append(
                     {
-                        "stage": "validation",
-                        "message": "no roots selected for concept",
-                        "conceptKey": concept.conceptKey,
+                        **concept.model_dump(),
+                        "rootCandidates": [r.oClassId for r in roots],
                     }
                 )
-                continue
-            concept_items.append(
-                {
-                    **concept.model_dump(),
-                    "rootCandidates": [r.oClassId for r in roots],
-                }
-            )
 
         event_payload = None
-        if not event_roots:
+        if include_event and not event_roots:
             if not (payload.eventTitle or payload.eventNormalizedTextEn):
                 root_errors.append(
                     {
@@ -398,7 +440,7 @@ class OntologyService:
                 entries.append(self._o_class_view(o_class))
             subtree_candidates[root] = entries
 
-        if event_roots:
+        if include_event and event_roots:
             event_payload = {
                 "title": payload.eventTitle or self._infer_event_title(payload),
                 "normalizedTextEn": payload.eventNormalizedTextEn,
@@ -407,6 +449,7 @@ class OntologyService:
 
         return {
             "mode": payload.mode,
+            "scope": payload.scope,
             "concepts": concept_items,
             "event": event_payload,
             "rootSubtrees": subtree_candidates,

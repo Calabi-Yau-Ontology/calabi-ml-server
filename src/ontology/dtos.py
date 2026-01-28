@@ -95,12 +95,14 @@ class ProposeResponse(BaseModel):
     classifications: List[Classification] = Field(default_factory=list)
     queryTemplates: List[QueryTemplate] = Field(default_factory=list)
     errors: List[Dict[str, Any]] = Field(default_factory=list)
+    warnings: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class ClassifyRequest(BaseModel):
-    concepts: List[ConceptSample] = Field(min_length=1)
+    concepts: List[ConceptSample] = Field(default_factory=list)
     snapshot: Snapshot
     mode: Literal["existing_only", "allow_new_leaf"] = "existing_only"
+    scope: Literal["concept", "event", "both"] = "both"
     eventId: Optional[str] = None
     eventTitle: Optional[str] = None
     eventNormalizedTextEn: Optional[str] = None
@@ -118,6 +120,7 @@ class ClassifyRequest(BaseModel):
                 ],
                 "snapshot": {"seedVersion": "0.1.1", "oClasses": [], "subclassEdges": []},
                 "mode": "existing_only",
+                "scope": "both",
                 "eventTitle": "Climbing with Alice",
             }
         }
@@ -131,3 +134,4 @@ class ClassifyResponse(BaseModel):
     oClassesToAdd: List[SnapshotOClass] = Field(default_factory=list)
     subclassEdgesToAdd: List[SnapshotEdge] = Field(default_factory=list)
     errors: List[Dict[str, Any]] = Field(default_factory=list)
+    warnings: List[Dict[str, Any]] = Field(default_factory=list)
