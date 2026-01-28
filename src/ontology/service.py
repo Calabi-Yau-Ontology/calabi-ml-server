@@ -174,6 +174,17 @@ class OntologyService:
             activity_roots,
             root_errors,
         )
+        if not stage2_payload.get("concepts") and not stage2_payload.get("event"):
+            root_errors.append(
+                {
+                    "stage": "validation",
+                    "message": "no candidates for stage2 classification",
+                }
+            )
+            return ClassifyResponse(
+                ok=(payload.mode == "existing_only"),
+                errors=root_errors,
+            )
         stage2_prompt = CLASSIFY_USER_PROMPT_TEMPLATE.format(
             payload=json.dumps(stage2_payload, ensure_ascii=False)
         )
@@ -330,27 +341,18 @@ class OntologyService:
             leaves = [n for n in visited if not children_by_parent.get(n)]
             return leaves or [root_id]
 
-        roots_by_facet: Dict[str, List[str]] = {}
-        for root in all_roots:
-            facet = getattr(root, "facet", None)
-            if facet:
-                roots_by_facet.setdefault(facet, []).append(root.id)
-
         concept_items = []
         for concept in payload.concepts:
             roots = concept_root_map.get(concept.conceptKey, [])
             if not roots:
-                facet_roots = roots_by_facet.get(concept.conceptType, [])
-                fallback_ids = facet_roots or [r.id for r in all_roots]
-                roots = [RootCandidate(oClassId=r, confidence=0.0) for r in fallback_ids]
                 root_errors.append(
                     {
                         "stage": "validation",
-                        "message": "fallback roots applied for concept",
+                        "message": "no roots selected for concept",
                         "conceptKey": concept.conceptKey,
-                        "rootCount": len(fallback_ids),
                     }
                 )
+                continue
             concept_items.append(
                 {
                     **concept.model_dump(),
@@ -359,16 +361,28 @@ class OntologyService:
             )
 
         event_payload = None
-        if not event_roots and activity_roots:
-            fallback_ids = [r.id for r in activity_roots]
-            event_roots = [RootCandidate(oClassId=r, confidence=0.0) for r in fallback_ids]
-            root_errors.append(
-                {
-                    "stage": "validation",
-                    "message": "fallback roots applied for event",
-                    "rootCount": len(fallback_ids),
-                }
-            )
+        if not event_roots:
+            if not (payload.eventTitle or payload.eventNormalizedTextEn):
+                root_errors.append(
+                    {
+                        "stage": "validation",
+                        "message": "event context missing; event classification skipped",
+                    }
+                )
+            elif not activity_roots:
+                root_errors.append(
+                    {
+                        "stage": "validation",
+                        "message": "no Activity roots in snapshot; event classification skipped",
+                    }
+                )
+            else:
+                root_errors.append(
+                    {
+                        "stage": "validation",
+                        "message": "event root selection empty; event classification skipped",
+                    }
+                )
 
         subtree_candidates: Dict[str, List[Dict[str, Any]]] = {}
         roots_for_subtrees = {c.oClassId for c in event_roots} | {
