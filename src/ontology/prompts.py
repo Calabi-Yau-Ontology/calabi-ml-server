@@ -16,7 +16,7 @@ Given CQs and the current taxonomy snapshot, propose minimal additions:
 - queryTemplates (read-only querySketch + params + outputSchema)
 
 [Hard Rules]
-- If unsure, keep classification at higher parent level.
+- If unsure, OMIT the classification (leave unclassified). Do NOT choose a parent.
 - Do NOT invent new data fields.
 - Do NOT output analysis metrics as OProp (distribution/trend/score).
 - For existing_only mode (in /classify), do NOT add new classes or edges.
@@ -55,19 +55,20 @@ If conceptRootOClasses is provided, use ONLY those for concept roots.
 CLASSIFY_USER_PROMPT_TEMPLATE = """
 [Context]
 We classify concept mentions from calendar titles into the existing OClass tree.
-No Wikidata. If ambiguous, choose the higher-level class.
+No Wikidata. If ambiguous, OMIT the classification.
 
 [Task]
 Classify each concept into a LEAF OClass selected from the provided candidate subtrees.
 Also classify the event title into a LEAF Activity OClass if event candidates are provided.
-- You must choose only from provided candidate lists.
+- Choose ONLY leaf ids from the provided candidate lists.
+- If you cannot confidently choose a leaf, OMIT the item (do not output a classification for it).
+- Never invent Other/Unknown or any forced placeholder leaf.
 - If mode == "existing_only": do NOT add new classes or edges.
 - If mode == "allow_new_leaf": new leaf classes and subclass edges are allowed.
 - Respect scope:
   - scope == "concept": do NOT return eventActivities.
   - scope == "event": you may ignore concept classifications.
   - scope == "both": return both when candidates exist.
-- Prefer higher-level leaves if ambiguous.
 - Use context fields when available:
   - sourceText (original title)
   - normalizedTextEn
