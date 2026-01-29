@@ -117,6 +117,11 @@ class OntologyService:
             )
         include_concept = payload.scope in ("concept", "both")
         include_event = payload.scope in ("event", "both")
+        concept_roots = (
+            [c for c in roots if getattr(c, "facet", None) == "Entity"]
+            if include_concept
+            else []
+        )
         activity_roots = (
             [c for c in roots if getattr(c, "facet", None) == "Activity"]
             if include_event
@@ -127,10 +132,17 @@ class OntologyService:
             if include_event
             else None
         )
+        root_candidates = []
+        if include_concept:
+            root_candidates.extend(concept_roots)
+        if include_event:
+            root_candidates.extend(activity_roots)
+        root_candidates = list({c.id: c for c in root_candidates}.values())
+
         root_payload = {
             "mode": payload.mode,
-            "rootOClasses": [self._o_class_view(c) for c in roots],
-            "conceptRootOClasses": [self._o_class_view(c) for c in roots],
+            "rootOClasses": [self._o_class_view(c) for c in root_candidates],
+            "conceptRootOClasses": [self._o_class_view(c) for c in concept_roots],
             "eventRootOClasses": [self._o_class_view(c) for c in activity_roots],
             "concepts": [c.model_dump() for c in payload.concepts] if include_concept else [],
             "eventTitle": event_title,
@@ -154,13 +166,13 @@ class OntologyService:
                 errors=[{"stage": "llm_call", "message": str(e)}],
             )
 
-        allowed_root_ids = {c.id for c in roots}
+        concept_root_ids = {c.id for c in concept_roots}
         root_warnings: List[Dict[str, Any]] = root_selection.errors or []
         concept_root_map: Dict[str, List[RootCandidate]] = {}
         if include_concept:
             for entry in root_selection.conceptRoots:
                 concept_root_map[entry.conceptKey] = self._select_roots(
-                    entry.roots, allowed_root_ids
+                    entry.roots, concept_root_ids
                 )
         event_roots = (
             self._select_roots(root_selection.eventRoots, {c.id for c in activity_roots})
@@ -252,6 +264,91 @@ class OntologyService:
 
         if not include_concept and parsed.classifications is not None:
             parsed.classifications = []
+
+        stage2_concepts = stage2_payload.get("concepts") or []
+        root_subtrees = stage2_payload.get("rootSubtrees") or {}
+        root_leaf_map = {
+            root_id: {entry["id"] for entry in entries}
+            for root_id, entries in root_subtrees.items()
+        }
+        concept_leaf_map: Dict[str, set[str]] = {}
+        if include_concept:
+            for concept in stage2_concepts:
+                allowed = set()
+                for root_id in concept.get("rootCandidates", []):
+                    allowed |= root_leaf_map.get(root_id, set())
+                concept_leaf_map[concept.get("conceptKey")] = allowed
+
+        event_leaf_ids: set[str] = set()
+        if include_event and stage2_payload.get("event"):
+            for root_id in stage2_payload["event"].get("rootCandidates", []):
+                event_leaf_ids |= root_leaf_map.get(root_id, set())
+
+        if parsed.classifications:
+            kept = []
+            dropped = []
+            for item in parsed.classifications:
+                allowed = concept_leaf_map.get(item.conceptKey)
+                if not allowed or item.oClassId not in allowed:
+                    dropped.append(
+                        {
+                            "conceptKey": item.conceptKey,
+                            "conceptType": item.conceptType,
+                            "conceptName": item.conceptName,
+                            "oClassId": item.oClassId,
+                        }
+                    )
+                else:
+                    kept.append(item)
+            if dropped:
+                parsed.classifications = kept
+                parsed.warnings.append(
+                    {
+                        "stage": "validation",
+                        "message": "leaf-only: stripped classifications not in candidate leaves",
+                        "droppedCount": len(dropped),
+                        "dropped": dropped[:50],
+                    }
+                )
+        if include_concept and stage2_concepts and not parsed.classifications:
+            parsed.warnings.append(
+                {
+                    "stage": "classification",
+                    "message": "no concept classifications returned; left unclassified",
+                    "count": len(stage2_concepts),
+                }
+            )
+
+        if parsed.eventActivities:
+            kept_events = []
+            dropped_events = []
+            for item in parsed.eventActivities:
+                if event_leaf_ids and item.oClassId in event_leaf_ids:
+                    kept_events.append(item)
+                else:
+                    dropped_events.append(
+                        {
+                            "eventId": item.eventId,
+                            "oClassId": item.oClassId,
+                        }
+                    )
+            if dropped_events:
+                parsed.eventActivities = kept_events
+                parsed.warnings.append(
+                    {
+                        "stage": "validation",
+                        "message": "leaf-only: stripped event activities not in candidate leaves",
+                        "droppedCount": len(dropped_events),
+                        "dropped": dropped_events[:50],
+                    }
+                )
+        if include_event and stage2_payload.get("event") and not parsed.eventActivities:
+            parsed.warnings.append(
+                {
+                    "stage": "classification",
+                    "message": "no event activities returned; left unclassified",
+                }
+            )
 
         if payload.mode == "existing_only":
             if parsed.oClassesToAdd or parsed.subclassEdgesToAdd:
@@ -380,7 +477,7 @@ class OntologyService:
                 for child in children_by_parent.get(node, []):
                     stack.append(child)
             leaves = [n for n in visited if not children_by_parent.get(n)]
-            return leaves or [root_id]
+            return leaves
 
         concept_items = []
         if include_concept:
@@ -432,6 +529,15 @@ class OntologyService:
         } | {root_id for item in concept_items for root_id in item["rootCandidates"]}
         for root in roots_for_subtrees:
             leaves = collect_leaves(root)
+            if not leaves:
+                root_errors.append(
+                    {
+                        "stage": "validation",
+                        "message": "no leaf candidates for root",
+                        "rootId": root,
+                    }
+                )
+                continue
             entries = []
             for leaf_id in leaves[:200]:
                 o_class = class_index.get(leaf_id)
