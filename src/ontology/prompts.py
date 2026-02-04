@@ -7,6 +7,11 @@ PROPOSE_USER_PROMPT_TEMPLATE = """
 [Context]
 We build a personal knowledge graph from calendar titles (mentions only).
 Do NOT assume attendees, GPS, or true duration. No Wikidata expansion.
+Data graph (available for queryTemplates):
+- (:User)-[:OWNS_EVENT]->(:Event)
+- (:Event)-[:MENTIONS]->(:Concept)
+- (:User)-[:RELATED_TO]->(:Concept)
+- (:Event)-[:HAS_ACTIVITY]->(:OClass)  // event-level activity classification
 
 [Task]
 Given CQs and the current taxonomy snapshot, propose minimal additions:
@@ -21,6 +26,8 @@ Given CQs and the current taxonomy snapshot, propose minimal additions:
 - Do NOT invent new data fields.
 - Do NOT output analysis metrics as OProp (distribution/trend/score).
 - For existing_only mode (in /classify), do NOT add new classes or edges.
+- You MUST output at least one queryTemplate per CQ.
+  - If a CQ is truly impossible, add a warning explaining why and omit only that CQ's template.
 
 [Payload JSON]
 {payload}
