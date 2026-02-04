@@ -17,6 +17,7 @@ Given CQs and the current taxonomy snapshot, propose minimal additions:
 
 [Hard Rules]
 - If unsure, OMIT the classification (leave unclassified). Do NOT choose a parent.
+- CQs are NOT concepts. Do NOT classify CQs or turn CQ text into OClasses.
 - Do NOT invent new data fields.
 - Do NOT output analysis metrics as OProp (distribution/trend/score).
 - For existing_only mode (in /classify), do NOT add new classes or edges.

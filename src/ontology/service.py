@@ -88,6 +88,30 @@ class OntologyService:
                 user_prompt,
                 ProposeResponse,
             )
+            if parsed.classifications:
+                cq_set = {cq.strip() for cq in payload.cqs if isinstance(cq, str)}
+                dropped = []
+                kept = []
+                for item in parsed.classifications:
+                    concept_name = (item.conceptName or "").strip()
+                    concept_type = (item.conceptType or "").strip().lower()
+                    if concept_type in ("cq", "competencyquestion") or (
+                        concept_name and concept_name in cq_set
+                    ):
+                        dropped.append(item)
+                        continue
+                    kept.append(item)
+                if dropped:
+                    parsed.classifications = kept
+                    if parsed.warnings is None:
+                        parsed.warnings = []
+                    parsed.warnings.append(
+                        {
+                            "stage": "validation",
+                            "message": "dropped CQ-like classifications from propose",
+                            "droppedCount": len(dropped),
+                        }
+                    )
             if parsed.errors:
                 parsed.ok = False
             return parsed
